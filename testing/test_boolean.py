@@ -916,3 +916,102 @@ def test_vertex_near_face(s):
     b = scaled(b, 1, (-.5, .5, .25))
 
     check_all_modes(scaled(a, s), scaled(b, s))
+
+# zufällige fälle (anzahl über VTKBOOL_FUZZ_CASES)
+
+import os
+import random
+
+from vtkmodules.vtkFiltersModeling import vtkSelectEnclosedPoints
+
+def random_primitive(rng):
+    kind = rng.choice(['box', 'sphere', 'cylinder', 'star', 'torus'])
+
+    if kind == 'box':
+        x, y, z = [ rng.uniform(.3, 1.5) for _ in range(3) ]
+        return kind, box(-x/2, x/2, -y/2, y/2, -z/2, z/2)
+
+    if kind == 'sphere':
+        return kind, sphere(rng.uniform(.3, .9), res=rng.randint(6, 30))
+
+    if kind == 'cylinder':
+        return kind, cylinder(rng.uniform(.2, .7), rng.uniform(.5, 2), res=rng.randint(5, 40))
+
+    if kind == 'star':
+        r1 = rng.uniform(.5, 1)
+        return kind, scaled(extrude_polygon(star(rng.randint(3, 8), r1, rng.uniform(.2, .9)*r1), rng.uniform(.3, 1.5)), 1, (0, 0, -.5))
+
+    R = rng.uniform(.5, 1)
+    return kind, torus(R, rng.uniform(.1, .4)*R, rng.randint(6, 30), rng.randint(4, 16))
+
+def random_pose(rng):
+    if rng.random() < .4:
+        # eingerastete lagen erzeugen koplanare und kollineare situationen
+        axis = rng.choice([(1, 0, 0), (0, 1, 0), (0, 0, 1)])
+        angle = rng.choice([0, 45, 90, 180])
+        t = [ rng.randint(-2, 2)*.25 for _ in range(3) ]
+    else:
+        axis = [ rng.gauss(0, 1) for _ in range(3) ]
+        angle = rng.uniform(0, 360)
+        t = [ rng.uniform(-.5, .5) for _ in range(3) ]
+
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.RotateWXYZ(angle, *axis)
+    tra.Translate(*t)
+
+    return tra.GetMatrix(), (axis, angle, t)
+
+def enclosed(pdA, pdB):
+    # anteil der punkte von pdA in pdB
+    sel = vtkSelectEnclosedPoints()
+    sel.SetInputData(pdA)
+    sel.SetSurfaceData(pdB)
+    sel.Update()
+
+    n = pdA.GetNumberOfPoints()
+
+    return sum(sel.IsInside(i) for i in range(n))/n
+
+def fuzz_case(seed, plain=False):
+    rng = random.Random(seed)
+
+    kindA, a = random_primitive(rng)
+    kindB, b = random_primitive(rng)
+
+    m, pose = random_pose(rng)
+
+    s = 10**rng.uniform(-3, 3)
+    t = [ s*10**rng.uniform(0, 4)*rng.choice([-1, 1]) if rng.random() < .3 else 0 for _ in range(3) ]
+
+    if plain:
+        # ohne skalierung und verschiebung
+        s, t = 1, [0, 0, 0]
+
+    a = scaled(a, s, t)
+    b = scaled(transformed(b, m), s, t)
+
+    return a, b, f'{kindA} {kindB} pose={pose} scale={s:.3g} t={t}'
+
+FUZZ_CASES = int(os.environ.get('VTKBOOL_FUZZ_CASES', 50))
+
+@pytest.mark.parametrize('seed', range(FUZZ_CASES))
+def test_fuzz(seed):
+    a, b, desc = fuzz_case(seed)
+
+    pdA, pdB = get_pd(a), get_pd(b)
+
+    bf, errors = run_boolean(pdA, pdB, OPER_UNION)
+
+    if any('There is no contact.' in e for e in errors):
+        # nur erlaubt, wenn sich die oberflächen tatsächlich nicht schneiden
+        inA = enclosed(pdB, pdA)
+        inB = enclosed(pdA, pdB)
+
+        if inA in (0, 1) and inB in (0, 1):
+            pytest.skip(f'no contact: {desc}')
+
+    try:
+        check_all_modes(pdA, pdB)
+    except AssertionError as e:
+        raise AssertionError(f'seed {seed}: {desc}: {e}') from e
