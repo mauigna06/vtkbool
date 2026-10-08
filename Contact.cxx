@@ -739,7 +739,10 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
     }
 #endif
 
-    if (vtkMath::Dot(nA, nB) > .9999999999) {
+    // parallele ebenen (auch entgegengesetzt orientierte) haben keine schnittlinie, liegen sie aufeinander,
+    // ergibt sich die berührung aus den angrenzenden polygonen
+
+    if (std::abs(vtkMath::Dot(nA, nB)) > .9999999999) {
         return;
     }
 

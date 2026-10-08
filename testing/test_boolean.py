@@ -933,6 +933,74 @@ def test_collapsing_capture_points():
 
     check_all_modes(scaled(a, s), scaled(b, s))
 
+@pytest.mark.parametrize('s', [1, .3])
+def test_prism_face_touch(s):
+    # eine seitenfläche des prismas und eine seite des quaders liegen mit entgegengesetzten normalen aufeinander,
+    # durch rundungsfehler sind die normalen nicht exakt parallel (aus test_fuzz_grid[238])
+
+    prism = cylinder(.25, 1.25, res=3)
+    b = box(-.625, -.125, -.5, 0, -.1875, .1875)
+
+    vols = check_all_modes(scaled(prism, s), scaled(b, s))
+
+    assert vols['intersection'] == pytest.approx(0, abs=1e-9)
+
+def check_embedding(bf, tol):
+    # jede schnittlinie muss in beiden ergebnissen eine kante der polygone auf beiden seiten sein
+    # (im gegensatz zu check_result auch für polygone, die durch eingebettete löcher punkte mehrfach enthalten)
+
+    from vtkmodules.vtkCommonDataModel import vtkStaticPointLocator
+    from vtkmodules.vtkCommonCore import vtkIdList
+
+    lines = bf.GetOutput(2)
+
+    for k in (0, 1):
+        pd = bf.GetOutput(k)
+        pd.BuildLinks()
+
+        loc = vtkStaticPointLocator()
+        loc.SetDataSet(pd)
+        loc.BuildLocator()
+
+        for c in range(lines.GetNumberOfCells()):
+            ends = []
+
+            for j in range(2):
+                found = vtkIdList()
+                loc.FindPointsWithinRadius(tol, lines.GetPoint(lines.GetCell(c).GetPointId(j)), found)
+                ends.append(set(found.GetId(i) for i in range(found.GetNumberOfIds())))
+
+            polys = set()
+
+            for pt in ends[0]:
+                cells = vtkIdList()
+                pd.GetPointCells(pt, cells)
+                polys.update(cells.GetId(i) for i in range(cells.GetNumberOfIds()))
+
+            uses = 0
+
+            for poly in polys:
+                cell = pd.GetCell(poly)
+                ring = [ cell.GetPointId(j) for j in range(cell.GetNumberOfPoints()) ]
+
+                for a, b in zip(ring, ring[1:]+ring[:1]):
+                    if (a in ends[0] and b in ends[1]) or (a in ends[1] and b in ends[0]):
+                        uses += 1
+
+            assert uses >= 2 and uses%2 == 0, f'line {c} is used {uses} times as an edge of output {k}'
+
+def check_fuzz(pdA, pdB, desc, seed):
+    try:
+        check_all_modes(pdA, pdB, none=False)
+
+        bf, errors = run_boolean(pdA, pdB, OPER_NONE)
+        assert not errors, errors
+
+        check_embedding(bf, internal_tol(pdA, pdB))
+
+    except AssertionError as e:
+        raise AssertionError(f'seed {seed}: {desc}: {e}') from e
+
 # zufällige fälle (anzahl über VTKBOOL_FUZZ_CASES)
 
 import os
@@ -1010,8 +1078,9 @@ def fuzz_case(seed, plain=False):
     return a, b, f'{kindA} {kindB} pose={pose} scale={s:.3g} t={t}'
 
 FUZZ_CASES = int(os.environ.get('VTKBOOL_FUZZ_CASES', 50))
+FUZZ_OFFSET = int(os.environ.get('VTKBOOL_FUZZ_OFFSET', 0))
 
-@pytest.mark.parametrize('seed', range(FUZZ_CASES))
+@pytest.mark.parametrize('seed', range(FUZZ_OFFSET, FUZZ_OFFSET+FUZZ_CASES))
 def test_fuzz(seed):
     a, b, desc = fuzz_case(seed)
 
@@ -1027,7 +1096,66 @@ def test_fuzz(seed):
         if inA in (0, 1) and inB in (0, 1):
             pytest.skip(f'no contact: {desc}')
 
-    try:
-        check_all_modes(pdA, pdB)
-    except AssertionError as e:
-        raise AssertionError(f'seed {seed}: {desc}: {e}') from e
+    check_fuzz(pdA, pdB, desc, seed)
+
+# schwierigere zufällige fälle: alle maße auf einem raster, dadurch viele koplanare, kollineare und
+# zusammenfallende elemente
+
+def random_primitive_grid(rng):
+    g = lambda a, b: rng.randint(a, b)/8
+
+    kind = rng.choice(['box', 'box', 'cylinder', 'sphere', 'star'])
+
+    if kind == 'box':
+        x, y, z = g(2, 12), g(2, 12), g(2, 12)
+        return kind, box(-x/2, x/2, -y/2, y/2, -z/2, z/2)
+
+    if kind == 'cylinder':
+        return kind, cylinder(g(2, 6), g(4, 16), res=rng.choice([3, 4, 6, 8, 12]))
+
+    if kind == 'sphere':
+        return kind, sphere(g(2, 6), res=rng.choice([4, 6, 8]))
+
+    r1 = g(4, 8)
+    return kind, scaled(extrude_polygon(star(rng.randint(3, 6), r1, r1/2), g(2, 8)), 1, (0, 0, -g(1, 4)))
+
+def random_pose_grid(rng):
+    axis = rng.choice([(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (1, 1, 1)])
+    angle = rng.choice([0, 0, 30, 45, 60, 90, 120, 180])
+    t = [ rng.randint(-4, 4)/8 for _ in range(3) ]
+
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.RotateWXYZ(angle, *axis)
+    tra.Translate(*t)
+
+    return tra.GetMatrix(), (axis, angle, t)
+
+def fuzz_case_grid(seed):
+    rng = random.Random(seed)
+
+    kindA, a = random_primitive_grid(rng)
+    kindB, b = random_primitive_grid(rng)
+
+    m, pose = random_pose_grid(rng)
+
+    s = rng.choice([1, 1, .3, 7])
+
+    return scaled(a, s), scaled(transformed(b, m), s), f'{kindA} {kindB} pose={pose} scale={s}'
+
+@pytest.mark.parametrize('seed', range(FUZZ_OFFSET, FUZZ_OFFSET+FUZZ_CASES))
+def test_fuzz_grid(seed):
+    a, b, desc = fuzz_case_grid(seed)
+
+    pdA, pdB = get_pd(a), get_pd(b)
+
+    bf, errors = run_boolean(pdA, pdB, OPER_UNION)
+
+    if any('There is no contact.' in e for e in errors):
+        inA = enclosed(pdB, pdA)
+        inB = enclosed(pdA, pdB)
+
+        if inA in (0, 1) and inB in (0, 1):
+            pytest.skip(f'no contact: {desc}')
+
+    check_fuzz(pdA, pdB, desc, seed)
