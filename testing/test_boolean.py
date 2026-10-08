@@ -54,17 +54,17 @@ def get_pd(src):
     src.Update()
     return src.GetOutputDataObject(0)
 
-def producer(src):
+def connect(alg, src, port=0):
+    # ein temporärer vtkTrivialProducer wäre nach GetOutputPort() schon wieder freigegeben
     if isinstance(src, vtkPolyData):
-        prod = vtkTrivialProducer()
-        prod.SetOutput(src)
-        return prod
-    return src
+        alg.SetInputData(port, src)
+    else:
+        alg.SetInputConnection(port, src.GetOutputPort())
 
 def run_boolean(srcA, srcB, mode, matrices=None):
     bf = vtkPolyDataBooleanFilter()
-    bf.SetInputConnection(0, producer(srcA).GetOutputPort())
-    bf.SetInputConnection(1, producer(srcB).GetOutputPort())
+    connect(bf, srcA, 0)
+    connect(bf, srcB, 1)
     bf.SetOperMode(mode)
 
     if matrices is not None:
@@ -274,7 +274,7 @@ def transformed(src, matrix):
 
     tf = vtkTransformPolyDataFilter()
     tf.SetTransform(tra)
-    tf.SetInputConnection(producer(src).GetOutputPort())
+    connect(tf, src)
     tf.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
 
     return tf
@@ -393,7 +393,7 @@ def rotated(src, angle, axis=(0, 0, 1), center=(0, 0, 0), translate=(0, 0, 0)):
 
     tf = vtkTransformPolyDataFilter()
     tf.SetTransform(tra)
-    tf.SetInputConnection(producer(src).GetOutputPort())
+    connect(tf, src)
     tf.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
 
     return tf
@@ -506,7 +506,7 @@ def scaled(src, s, t=(0, 0, 0)):
 
     tf = vtkTransformPolyDataFilter()
     tf.SetTransform(tra)
-    tf.SetInputConnection(producer(src).GetOutputPort())
+    connect(tf, src)
     tf.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
 
     return tf
@@ -577,7 +577,10 @@ def torus(R=1, r=.3, n=24, m=12, center=(0, 0, 0)):
 def appended(*srcs):
     app = vtkAppendPolyData()
     for src in srcs:
-        app.AddInputConnection(producer(src).GetOutputPort())
+        if isinstance(src, vtkPolyData):
+            app.AddInputData(src)
+        else:
+            app.AddInputConnection(src.GetOutputPort())
     return app
 
 def test_comb_polygon():
@@ -685,3 +688,203 @@ def test_octagon_box_valid():
 @pytest.mark.parametrize('b', [(.5, 1.5, .5, 1.5, .5, 1.5), (.5, 1.5, .25, .75, .25, .75), (.25, .75, .5, 1.5, -1, 2), (.5, 1.5, 0, 1, 0, 1)])
 def test_octagon_box(b, tmp_path):
     check_all_modes(octagon_box(), box(*b), box_volumes(UNIT, b), d=tmp_path)
+
+# level 7: verkettung und api
+
+def boolean_output(srcA, srcB, mode, matrices=None):
+    bf, errors = run_boolean(srcA, srcB, mode, matrices)
+    assert not errors, errors
+
+    pd = vtkPolyData()
+    pd.DeepCopy(bf.GetOutput(0))
+
+    return pd
+
+def test_drill_sequence(tmp_path):
+    # drei sich kreuzende bohrungen, jede durchquert die vorherigen
+    vol = volume(box(-.5, .5, -.5, .5, -.5, .5))
+    current = get_pd(box(-.5, .5, -.5, .5, -.5, .5))
+
+    cyls = [
+        cylinder(.2, 2, res=24),
+        transformed(cylinder(.15, 2, res=20), rotation_matrix(90, (1, 0, 0))),
+        transformed(cylinder(.25, 2, res=28), rotation_matrix(90, (0, 0, 1))),
+        transformed(cylinder(.1, 2, center=(.3, 0, .3), res=12), rotation_matrix(45, (0, 0, 1)))
+    ]
+
+    for i, cyl in enumerate(cyls):
+        vols = check_all_modes(current, cyl, none=False)
+        assert vols['difference'] < vol
+        vol = vols['difference']
+        current = boolean_output(current, cyl, OPER_DIFFERENCE)
+
+def test_union_chain(tmp_path):
+    current = get_pd(box(0, 1, 0, 1, 0, 1))
+
+    for i in range(1, 6):
+        b = transformed(box(0, 1, 0, 1, 0, 1), rotation_matrix(10*i, (0, 0, 1), (.5, .5, .5)))
+        b = scaled(b, 1, (.4*i, .1*i, .05*i))
+        check_all_modes(current, b, none=False)
+        current = boolean_output(current, b, OPER_UNION)
+
+def test_union_chain_coplanar(tmp_path):
+    # alle quader liegen auf der gleichen ebene und überlappen sich
+    rects = [(0, 1, 0, 1)]
+
+    current = get_pd(box(0, 1, 0, 1, 0, 1))
+
+    for i in range(1, 6):
+        r = (.5*i, .5*i+1, .25*(i%2), .25*(i%2)+1)
+        rects.append(r)
+
+        b = box(*r, 0, 1)
+        check_all_modes(current, b, none=False)
+        current = boolean_output(current, b, OPER_UNION)
+
+    # exakte fläche der vereinigung auf einem raster der weite .25
+    area = sum(.25**2 for i in range(16) for j in range(8)
+        if any(r[0] < (i+.5)*.25 < r[1] and r[2] < (j+.5)*.25 < r[3] for r in rects))
+
+    assert volume(current) == pytest.approx(area, rel=1e-9)
+
+def test_rerun_oper_mode():
+    a, b = box(*UNIT), sphere(.6, (.8, .7, .6))
+
+    bf, errors = run_boolean(a, b, OPER_UNION)
+
+    for name, mode in MODES.items():
+        bf.SetOperMode(mode)
+        bf.Update()
+
+        fresh = boolean_output(a, b, mode)
+
+        assert surface_props(bf.GetOutput(0))[0] == pytest.approx(surface_props(fresh)[0], abs=1e-9), name
+        assert bf.GetOutput(0).GetNumberOfCells() == fresh.GetNumberOfCells(), name
+
+@pytest.mark.parametrize('i', [0, 1])
+def test_rerun_matrix(i):
+    a, b = box(*UNIT), box(.4, 1.4, .3, 1.3, .2, 1.2)
+
+    m = rotation_matrix(0, (1, 0, 0))
+
+    bf = vtkPolyDataBooleanFilter()
+    bf.SetInputConnection(0, a.GetOutputPort())
+    bf.SetInputConnection(1, b.GetOutputPort())
+    bf.SetOperModeToDifference()
+    bf.SetMatrix(i, m)
+
+    for angle in [0, 20, 45, 70]:
+        tra = vtkTransform()
+        tra.PostMultiply()
+        tra.Translate(-.9, -.8, -.7)
+        tra.RotateWXYZ(angle, 1, 2, 3)
+        tra.Translate(.9, .8, .7)
+
+        # die matrix wird an ort und stelle geändert
+        m.DeepCopy(tra.GetMatrix())
+
+        bf.Update()
+
+        mats = [None, None]
+        mats[i] = tra.GetMatrix()
+
+        srcs = [a, b]
+        srcs[i] = transformed(srcs[i], tra.GetMatrix())
+
+        fresh = boolean_output(*srcs, OPER_DIFFERENCE)
+
+        vol, bad = surface_props(bf.GetOutput(0))
+
+        assert not bad
+        assert vol == pytest.approx(surface_props(fresh)[0], abs=1e-9), angle
+
+def test_rerun_input():
+    a = box(*UNIT)
+    b = sphere(.5, (1, 1, 1))
+
+    bf, errors = run_boolean(a, b, OPER_DIFFERENCE)
+
+    for c in [(.9, .8, .7), (.2, .3, .4), (1.2, 1.1, 1)]:
+        b.SetCenter(*c)
+        bf.Update()
+
+        fresh = boolean_output(a, sphere(.5, c), OPER_DIFFERENCE)
+
+        vol, bad = surface_props(bf.GetOutput(0))
+
+        assert not bad
+        assert vol == pytest.approx(surface_props(fresh)[0], abs=1e-9), c
+
+def test_orig_cell_ids():
+    from vtkmodules.vtkCommonCore import vtkIntArray
+
+    a, b = get_pd(box(*UNIT)), get_pd(sphere(.6, (.8, .7, .6)))
+
+    # gleicher name, da vtkAppendPolyData nur gemeinsame arrays übernimmt
+    for pd, offset in [(a, 1000), (b, 2000)]:
+        arr = vtkIntArray()
+        arr.SetName('label')
+        for i in range(pd.GetNumberOfCells()):
+            arr.InsertNextValue(offset+i)
+        pd.GetCellData().AddArray(arr)
+
+    for name, mode in MODES.items():
+        out = boolean_output(a, b, mode)
+
+        idsA = out.GetCellData().GetArray('OrigCellIdsA')
+        idsB = out.GetCellData().GetArray('OrigCellIdsB')
+
+        assert idsA is not None and idsB is not None
+
+        label = out.GetCellData().GetArray('label')
+
+        for i in range(out.GetNumberOfCells()):
+            ia = idsA.GetValue(i)
+            ib = idsB.GetValue(i)
+
+            assert (ia < 0) != (ib < 0)
+
+            src, j = (a, ia) if ia >= 0 else (b, ib)
+
+            # die zelle muss in der ebene der ursprünglichen zelle liegen
+            cell = src.GetCell(j)
+            p0 = src.GetPoint(cell.GetPointId(0))
+            n = [0, 0, 0]
+            from vtkmodules.vtkCommonDataModel import vtkPolygon
+            vtkPolygon.ComputeNormal(cell.GetPoints(), n)
+
+            c = out.GetCell(i)
+            for k in range(c.GetNumberOfPoints()):
+                p = out.GetPoint(c.GetPointId(k))
+                assert abs(sum((p[m]-p0[m])*n[m] for m in range(3))) < 1e-6, (name, i)
+
+            if ia >= 0:
+                assert label.GetValue(i) == 1000+ia
+            else:
+                assert label.GetValue(i) == 2000+ib
+
+@pytest.mark.parametrize('which', ['A', 'B', 'both'])
+def test_empty_input(which):
+    empty = vtkPolyData()
+    a = empty if which in ('A', 'both') else get_pd(box(*UNIT))
+    b = empty if which in ('B', 'both') else get_pd(box(*UNIT))
+
+    for mode in range(5):
+        bf, errors = run_boolean(a, b, mode)
+
+        # eine fehlermeldung ist in ordnung, ein absturz nicht
+        assert bf.GetOutput(0).GetNumberOfCells() == 0 or not errors
+
+def test_lines_only():
+    line = vtkPolyLineSource()
+    line.SetNumberOfPoints(2)
+    line.SetPoint(0, -1, .5, .5)
+    line.SetPoint(1, 2, .5, .5)
+
+    for mode in range(5):
+        bf, errors = run_boolean(box(*UNIT), line, mode)
+
+def test_disjoint():
+    # keine berührung: bekannte einschränkung, aber kein absturz
+    bf, errors = run_boolean(box(*UNIT), box(2, 3, 2, 3, 2, 3), OPER_UNION)
+    assert errors
