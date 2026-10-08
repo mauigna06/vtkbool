@@ -23,6 +23,8 @@ limitations under the License.
 #include <vtkMatrix4x4.h>
 #include <vtkLinearTransform.h>
 
+#include <array>
+
 enum class Src {
     A,
     B
@@ -125,6 +127,11 @@ public:
     NonManifoldEdgesType edgesA, edgesB;
 
     vtkSmartPointer<vtkOBBTree> treeA, treeB;
+
+    // bounding-boxen der zellen für den schnelltest in InterPolys
+    std::vector<std::array<double, 6>> boundsA, boundsB;
+
+    static void GetCellBounds (vtkPolyData *pd, std::vector<std::array<double, 6>> &bounds);
 
     vtkSmartPointer<vtkPolyData> GetLines (vtkPolyData *pdA = nullptr, vtkLinearTransform *transA = nullptr, vtkPolyData *pdB = nullptr, vtkLinearTransform *transB = nullptr);
 

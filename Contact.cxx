@@ -210,6 +210,9 @@ vtkSmartPointer<vtkPolyData> Contact::GetLines (vtkPolyData *pdA, vtkLinearTrans
 
     lines->Reset();
 
+    GetCellBounds(newPdA, boundsA);
+    GetCellBounds(newPdB, boundsB);
+
     treeA->IntersectWithOBBTree(treeB, matrix, InterNodes, this);
 
     IntersectReplacements();
@@ -243,6 +246,16 @@ vtkSmartPointer<vtkPolyData> Contact::GetLines (vtkPolyData *pdA, vtkLinearTrans
     cleaned->RemoveDeletedCells();
 
     return cleaned;
+}
+
+void Contact::GetCellBounds (vtkPolyData *pd, std::vector<std::array<double, 6>> &bounds) {
+    vtkIdType numCells = pd->GetNumberOfCells();
+
+    bounds.resize(numCells);
+
+    for (vtkIdType i = 0; i < numCells; i++) {
+        pd->GetCellBounds(i, bounds[i].data());
+    }
 }
 
 void Contact::GetNonManifoldEdges (vtkPolyData *pd, NonManifoldEdgesType &edges) {
@@ -581,6 +594,20 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
     }
 #endif
 
+    // schnelltest: zellen, deren bounding-boxen weiter als die toleranzen auseinander liegen, können sich nicht schneiden
+    // (die ersetzungen aus IntersectReplacements haben keine bounding-boxen)
+
+    if (idA < static_cast<vtkIdType>(boundsA.size()) && idB < static_cast<vtkIdType>(boundsB.size())) {
+        const auto &bA = boundsA[idA];
+        const auto &bB = boundsB[idB];
+
+        for (int i = 0; i < 3; i++) {
+            if (bA[2*i] > bB[2*i+1]+1e-4 || bB[2*i] > bA[2*i+1]+1e-4) {
+                return;
+            }
+        }
+    }
+
     vtkIdType numA, numB;
     const vtkIdType *ptsA, *ptsB;
 
@@ -609,6 +636,38 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
 
     double dA = polyA[0].x*nA[0]+polyA[0].y*nA[1]+polyA[0].z*nA[2];
     double dB = polyB[0].x*nB[0]+polyB[0].y*nB[1]+polyB[0].z*nB[2];
+
+    // liegt ein polygon vollständig auf einer seite der ebene des anderen, gibt es keine schnittpunkte
+    // (die toleranz deckt das einrasten in InterEdgeLine und nicht ebene polygone ab)
+
+    auto MaxDist = [](const Poly &poly, const double *n, double d) {
+        double dist = 0;
+
+        for (auto &p : poly) {
+            dist = std::max(dist, std::abs(p.x*n[0]+p.y*n[1]+p.z*n[2]-d));
+        }
+
+        return dist;
+    };
+
+    auto OneSide = [](const Poly &poly, const double *n, double d, double tol) {
+        bool above = true, below = true;
+
+        for (auto &p : poly) {
+            double dist = p.x*n[0]+p.y*n[1]+p.z*n[2]-d;
+
+            above = above && dist > tol;
+            below = below && dist < -tol;
+        }
+
+        return above || below;
+    };
+
+    if (OneSide(polyB, nA, dA, 1e-5+MaxDist(polyA, nA, dA))
+        || OneSide(polyA, nB, dB, 1e-5+MaxDist(polyB, nB, dB))) {
+
+        return;
+    }
 
     vtkMath::Cross(nA, nB, r);
     vtkMath::Normalize(r);

@@ -29,7 +29,7 @@ from collections import Counter
 from vtkmodules.vtkCommonCore import vtkCommand, VTK_STRING, vtkOutputWindow, vtkStringOutputWindow
 from vtkmodules.vtkCommonDataModel import vtkPolyData
 from vtkmodules.vtkCommonExecutionModel import vtkTrivialProducer, vtkAlgorithm
-from vtkmodules.vtkFiltersCore import vtkCleanPolyData
+from vtkmodules.vtkFiltersCore import vtkCleanPolyData, vtkTriangleFilter, vtkAppendPolyData
 from vtkmodules.vtkFiltersSources import vtkCubeSource, vtkCylinderSource, vtkSphereSource
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 from vtkmodules.vtkCommonTransforms import vtkTransform
@@ -52,7 +52,7 @@ def get_pd(src):
     if isinstance(src, vtkPolyData):
         return src
     src.Update()
-    return src.GetOutput()
+    return src.GetOutputDataObject(0)
 
 def producer(src):
     if isinstance(src, vtkPolyData):
@@ -133,6 +133,12 @@ def surface_props(pd, tol=None):
 
     if tol is None:
         tol = 1e-6*diagonal(pd)
+
+    if pd.GetNumberOfStrips() > 0:
+        tri = vtkTriangleFilter()
+        tri.SetInputData(pd)
+        tri.Update()
+        pd = tri.GetOutput()
 
     pd = merged(pd, tol)
 
@@ -528,3 +534,154 @@ def test_scaled(name, s):
 def test_translated(name, t):
     a, b = scale_cases[name]()
     check_all_modes(scaled(a, 1, (t, -t/2, t/3)), scaled(b, 1, (t, -t/2, t/3)))
+
+# level 6: topologie und komplexität
+
+from vtkmodules.vtkFiltersSources import vtkPolyLineSource
+from vtkmodules.vtkFiltersModeling import vtkRotationalExtrusionFilter
+
+def star(n=5, r1=1, r2=.4):
+    pts = []
+    for i in range(2*n):
+        r = r1 if i%2 == 0 else r2
+        a = math.pi/2+i*math.pi/n
+        pts.append([r*math.cos(a), r*math.sin(a)])
+    return pts
+
+def comb(teeth=5):
+    # steg [0, 2*teeth-1]x[0, 1], darauf zähne der breite 1 und höhe 3 im abstand 2
+    pts = [[0, 0], [2*teeth-1, 0]]
+
+    for i in reversed(range(teeth)):
+        pts += [[2*i+1, 4], [2*i, 4]]
+
+        if i > 0:
+            pts += [[2*i, 1], [2*i-1, 1]]
+
+    return pts
+
+def torus(R=1, r=.3, n=24, m=12, center=(0, 0, 0)):
+    line = vtkPolyLineSource()
+    line.SetNumberOfPoints(m+1)
+
+    for i in range(m+1):
+        a = 2*math.pi*i/m
+        line.SetPoint(i, R+r*math.cos(a), 0, r*math.sin(a))
+
+    extr = vtkRotationalExtrusionFilter()
+    extr.SetInputConnection(line.GetOutputPort())
+    extr.SetResolution(n)
+
+    return scaled(extr, 1, center)
+
+def appended(*srcs):
+    app = vtkAppendPolyData()
+    for src in srcs:
+        app.AddInputConnection(producer(src).GetOutputPort())
+    return app
+
+def test_comb_polygon():
+    # das polygon selbst muss gültig sein
+    pd = get_pd(extrude_polygon(comb(), 1))
+    assert surface_props(pd)[1] == []
+    assert volume(pd) == pytest.approx(9+5*3, rel=1e-9)
+
+def test_star(tmp_path):
+    check_all_modes(extrude_polygon(star(), 1), box(-.6, .6, -.6, .6, .25, .75), d=tmp_path)
+
+def test_star_2(tmp_path):
+    check_all_modes(extrude_polygon(star(), 1), box(-.2, .2, -2, 2, -1, 2), d=tmp_path)
+
+@pytest.mark.parametrize('z', [(-1, 2), (.25, .75), (0, 1), (-1, .5)])
+def test_comb(z, tmp_path):
+    # ein loop je zahn
+    check_all_modes(extrude_polygon(comb(), 1), box(-1, 10, 2, 3, *z), d=tmp_path)
+
+def test_comb_2(tmp_path):
+    check_all_modes(extrude_polygon(comb(), 1), transformed(extrude_polygon(comb(), 1), rotation_matrix(180, (0, 0, 1), (4.5, 3.5, 0))), d=tmp_path)
+
+def test_torus_box(tmp_path):
+    check_all_modes(torus(), box(-2, 2, -.1, .1, -1, 1), d=tmp_path)
+
+def test_torus_cylinder(tmp_path):
+    # der zylinder schneidet die innenseite des rings
+    cyl = transformed(cylinder(.8, 2, res=32), rotation_matrix(90, (1, 0, 0)))
+    check_all_modes(torus(), cyl, d=tmp_path)
+
+def test_tori(tmp_path):
+    t2 = transformed(torus(), rotation_matrix(90, (1, 0, 0), (0, 0, 0)))
+    check_all_modes(torus(), scaled(t2, 1, (.5, 0, 0)), d=tmp_path)
+
+def test_holes(tmp_path):
+    cyls = [ transformed(cylinder(.1, 2, center=(x, 0, z), res=16), rotation_matrix(0, (1, 0, 0))) for x, z in [(-.25, -.25), (.25, -.25), (-.25, .25), (.25, .25), (0, 0)] ]
+    check_all_modes(box(-.5, .5, -.5, .5, -.5, .5), appended(*cyls), d=tmp_path)
+
+@pytest.mark.parametrize('res', [64, 128])
+def test_high_res(res, tmp_path):
+    check_all_modes(sphere(.5, res=res), sphere(.45, (.2, .1, .05), res-3), none=False)
+
+def test_slivers(tmp_path):
+    s = vtkSphereSource()
+    s.SetThetaResolution(300)
+    s.SetPhiResolution(5)
+    s.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
+    check_all_modes(s, box(-.3, .3, -.3, .3, -.2, .7), d=tmp_path)
+
+def test_lat_long_quads(tmp_path):
+    s = sphere(.5, res=16)
+    s.LatLongTessellationOn()
+    check_all_modes(s, box(-.3, .3, -.3, .3, -.2, .7), d=tmp_path)
+
+def twisted_box(angle, h=1):
+    # die deckfläche ist verdreht, die seitenflächen sind nicht eben
+    a = math.radians(angle)
+    bottom = [(-.5, -.5, 0), (.5, -.5, 0), (.5, .5, 0), (-.5, .5, 0)]
+    top = [ (x*math.cos(a)-y*math.sin(a), x*math.sin(a)+y*math.cos(a), h) for x, y, _ in bottom ]
+    pts = bottom+top
+    polys = [[3, 2, 1, 0], [4, 5, 6, 7]]+[ [i, (i+1)%4, (i+1)%4+4, i+4] for i in range(4) ]
+    return create_polydata(pts, polys)
+
+@pytest.mark.parametrize('angle', [1, 10, 30])
+def test_twisted(angle, tmp_path):
+    check_all_modes(twisted_box(angle), box(-.3, .3, -.3, .3, .3, 1.3), d=tmp_path)
+
+@pytest.mark.parametrize('angle', [1, 10, 30])
+def test_twisted_2(angle, tmp_path):
+    check_all_modes(twisted_box(angle), box(0, 1, 0, 1, .3, .7), d=tmp_path)
+
+def octagon_box():
+    # quader, dessen seitenflächen die kantenmitten enthalten (kollineare punkte)
+    pts = []
+    ids = {}
+    def pt(p):
+        if p not in ids:
+            ids[p] = len(pts)
+            pts.append(p)
+        return ids[p]
+    faces = []
+    for axis in range(3):
+        for side in (0, 1):
+            u, v = [ i for i in range(3) if i != axis ]
+            corners = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            if side == 0:
+                corners = corners[::-1]
+            if axis == 1:
+                corners = corners[::-1]
+            ring = []
+            for (a, b), (c, d) in zip(corners, corners[1:]+corners[:1]):
+                for p in [(a, b), ((a+c)/2, (b+d)/2)]:
+                    q = [0, 0, 0]
+                    q[axis] = side
+                    q[u], q[v] = p
+                    ring.append(pt(tuple(q)))
+            faces.append(ring)
+    return create_polydata(pts, faces)
+
+def test_octagon_box_valid():
+    pd = get_pd(octagon_box())
+    assert surface_props(pd)[1] == []
+    assert volume(pd) == pytest.approx(1)
+
+@pytest.mark.parametrize('b', [(.5, 1.5, .5, 1.5, .5, 1.5), (.5, 1.5, .25, .75, .25, .75), (.25, .75, .5, 1.5, -1, 2), (.5, 1.5, 0, 1, 0, 1)])
+def test_octagon_box(b, tmp_path):
+    check_all_modes(octagon_box(), box(*b), box_volumes(UNIT, b), d=tmp_path)
