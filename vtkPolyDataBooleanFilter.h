@@ -178,6 +178,9 @@ class VTK_EXPORT vtkPolyDataBooleanFilter : public vtkPolyDataAlgorithm {
 
     PolyStripsType polyStripsA, polyStripsB;
 
+    // zwei punkte der schnittlinien, die beim einrasten zusammenfallen (GetPolyStrips)
+    std::pair<vtkIdType, vtkIdType> collapsedPts;
+
     void GetStripPoints (vtkPolyData *pd, vtkIdTypeArray *sources, PStrips &pStrips, IdsType &lines);
     bool GetPolyStrips (vtkPolyData *pd, vtkIdTypeArray *conts, vtkIdTypeArray *sources, PolyStripsType &polyStrips);
     bool CleanStrips ();

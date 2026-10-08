@@ -60,6 +60,8 @@ limitations under the License.
 
 vtkStandardNewMacro(vtkPolyDataBooleanFilter);
 
+vtkSmartPointer<vtkPolyData> MergeContactPoints (vtkPolyData *lines, vtkIdType a, vtkIdType b);
+
 vtkPolyDataBooleanFilter::vtkPolyDataBooleanFilter () {
 
     SetNumberOfInputPorts(2);
@@ -265,9 +267,31 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
 
             start = clock::now();
 
-            if (GetPolyStrips(modPdA, contsA, sourcesA, polyStripsA) ||
-                GetPolyStrips(modPdB, contsB, sourcesB, polyStripsB)) {
+            // fallen zwei punkte der schnittlinien beim einrasten zusammen, liegen sie innerhalb der toleranz
+            // und werden vereint
 
+            bool invalid;
+
+            for (int k = 0; ; k++) {
+                collapsedPts = {NOTSET, NOTSET};
+
+                invalid = GetPolyStrips(modPdA, contsA, sourcesA, polyStripsA) ||
+                    GetPolyStrips(modPdB, contsB, sourcesB, polyStripsB);
+
+                if (!invalid || collapsedPts.first == NOTSET || k == 100) {
+                    break;
+                }
+
+                contLines = MergeContactPoints(contLines, collapsedPts.first, collapsedPts.second);
+
+                contsA = vtkIdTypeArray::SafeDownCast(contLines->GetCellData()->GetScalars("cA"));
+                contsB = vtkIdTypeArray::SafeDownCast(contLines->GetCellData()->GetScalars("cB"));
+
+                sourcesA = vtkIdTypeArray::SafeDownCast(contLines->GetCellData()->GetScalars("sourcesA"));
+                sourcesB = vtkIdTypeArray::SafeDownCast(contLines->GetCellData()->GetScalars("sourcesB"));
+            }
+
+            if (invalid) {
                 vtkErrorMacro("Strips are invalid.");
                 return 1;
             }
@@ -575,6 +599,53 @@ void vtkPolyDataBooleanFilter::GetStripPoints (vtkPolyData *pd, vtkIdTypeArray *
 
 }
 
+vtkSmartPointer<vtkPolyData> MergeContactPoints (vtkPolyData *lines, vtkIdType a, vtkIdType b) {
+    // b wird durch a ersetzt, a liegt danach in der mitte
+
+    auto pts = vtkSmartPointer<vtkPoints>::New();
+    pts->DeepCopy(lines->GetPoints());
+
+    double ptA[3], ptB[3];
+
+    lines->GetPoint(a, ptA);
+    lines->GetPoint(b, ptB);
+
+    pts->SetPoint(a, (ptA[0]+ptB[0])/2, (ptA[1]+ptB[1])/2, (ptA[2]+ptB[2])/2);
+
+    vtkIdType numCells = lines->GetNumberOfCells();
+
+    auto merged = vtkSmartPointer<vtkPolyData>::New();
+    merged->SetPoints(pts);
+    merged->Allocate(numCells);
+
+    merged->GetCellData()->CopyAllocate(lines->GetCellData(), numCells);
+
+    vtkIdType num;
+    const vtkIdType *line;
+
+    for (vtkIdType i = 0; i < numCells; i++) {
+        if (lines->GetCellType(i) != VTK_LINE) {
+            continue;
+        }
+
+        lines->GetCellPoints(i, num, line);
+
+        const vtkIdType newLine[] = {line[0] == b ? a : line[0], line[1] == b ? a : line[1]};
+
+        if (newLine[0] == newLine[1]) {
+            continue;
+        }
+
+        vtkIdType cellId = merged->InsertNextCell(VTK_LINE, 2, newLine);
+
+        merged->GetCellData()->CopyData(lines->GetCellData(), i, cellId);
+    }
+
+    merged->Squeeze();
+
+    return merged;
+}
+
 bool vtkPolyDataBooleanFilter::GetPolyStrips (vtkPolyData *pd, vtkIdTypeArray *conts, vtkIdTypeArray *sources, PolyStripsType &polyStrips) {
 #ifdef DEBUG
     std::cout << "GetPolyStrips()" << std::endl;
@@ -692,6 +763,7 @@ bool vtkPolyDataBooleanFilter::GetPolyStrips (vtkPolyData *pd, vtkIdTypeArray *c
                     collapsed[p].emplace(sp.ind);
 
                     if (collapsed[p].size() == 2) {
+                        collapsedPts = {*collapsed[p].begin(), *collapsed[p].rbegin()};
                         return true;
                     }
                 }

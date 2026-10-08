@@ -917,6 +917,22 @@ def test_vertex_near_face(s):
 
     check_all_modes(scaled(a, s), scaled(b, s))
 
+def test_collapsing_capture_points():
+    # zwei punkte der schnittlinie liegen knapp mehr als die toleranz auseinander, rasten aber an der gleichen stelle
+    # einer kante ein (aus test_fuzz[503])
+
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.RotateWXYZ(12.4011390522013, 1.749295983601171, 0.2079123312026314, -0.07539880503236884)
+    tra.Translate(0.0573241467934712, 0.39778485494180604, -0.07983220395294721)
+
+    a = sphere(0.39105171272436057, res=29)
+    b = transformed(sphere(0.5264984889817228, res=10), tra.GetMatrix())
+
+    s = 23.33704284428023
+
+    check_all_modes(scaled(a, s), scaled(b, s))
+
 # zufällige fälle (anzahl über VTKBOOL_FUZZ_CASES)
 
 import os
