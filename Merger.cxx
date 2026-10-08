@@ -645,11 +645,14 @@ bool Merger::FindConns (vtkPolyData *lines, vtkSmartPointer<vtkKdTree> kdTree, v
 
     auto line = vtkSmartPointer<vtkIdList>::New();
 
+    // vtkKdTree warnt, wenn mehr punkte angefordert werden, als vorhanden sind
+    int numClosest = static_cast<int>(std::min<vtkIdType>(n, pts->GetNumberOfPoints()));
+
     for (const auto &ids : indexedPolys) {
         for (vtkIdType idA : ids) {
             pts->GetPoint(idA, ptA);
 
-            kdTree->FindClosestNPoints(n, ptA, foundPts);
+            kdTree->FindClosestNPoints(numClosest, ptA, foundPts);
 
             numPts = foundPts->GetNumberOfIds();
 

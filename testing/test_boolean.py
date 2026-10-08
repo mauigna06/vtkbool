@@ -26,7 +26,7 @@ import math
 import pytest
 from collections import Counter
 
-from vtkmodules.vtkCommonCore import vtkCommand, VTK_STRING
+from vtkmodules.vtkCommonCore import vtkCommand, VTK_STRING, vtkOutputWindow, vtkStringOutputWindow
 from vtkmodules.vtkCommonDataModel import vtkPolyData
 from vtkmodules.vtkCommonExecutionModel import vtkTrivialProducer, vtkAlgorithm
 from vtkmodules.vtkFiltersCore import vtkCleanPolyData
@@ -81,7 +81,22 @@ def run_boolean(srcA, srcB, mode, matrices=None):
     bf.AddObserver(vtkCommand.ErrorEvent, on_error)
     bf.AddObserver(vtkCommand.WarningEvent, on_error)
 
-    bf.Update()
+    # meldungen der intern verwendeten objekte
+    win = vtkStringOutputWindow()
+
+    prev = vtkOutputWindow.GetInstance()
+    prev.Register(None)
+
+    vtkOutputWindow.SetInstance(win)
+
+    try:
+        bf.Update()
+    finally:
+        vtkOutputWindow.SetInstance(prev)
+        prev.UnRegister(None)
+
+    if win.GetOutput():
+        errors.append(win.GetOutput())
 
     return bf, errors
 
@@ -347,3 +362,69 @@ def test_identical_spheres(tmp_path):
     s = sphere(.5, res=16)
     vol = volume(s)
     check_all_modes(s, sphere(.5, res=16), {'union': vol, 'intersection': vol, 'difference': 0, 'difference2': 0}, d=tmp_path)
+
+# level 3: fast entartete fälle
+
+def rotated(src, angle, axis=(0, 0, 1), center=(0, 0, 0), translate=(0, 0, 0)):
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.Translate(*[ -c for c in center ])
+    tra.RotateWXYZ(angle, *axis)
+    tra.Translate(*center)
+    tra.Translate(*translate)
+
+    tf = vtkTransformPolyDataFilter()
+    tf.SetTransform(tra)
+    tf.SetInputConnection(producer(src).GetOutputPort())
+    tf.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
+
+    return tf
+
+EPSILONS = [1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-10]
+
+# flächen, die näher als die interne toleranz (1e-5) beieinander liegen, werden als koplanar behandelt,
+# das volumen darf sich dabei um fläche*abstand ändern
+SNAP_TOL = 2e-5
+
+@pytest.mark.parametrize('eps', EPSILONS)
+def test_near_coplanar(eps, tmp_path):
+    check_boxes(UNIT, (.5, 1.5, .25, 1.25, eps, 1+eps), tmp_path, rel_tol=SNAP_TOL)
+
+# liegen die flächen in mehreren richtungen knapp innerhalb der toleranz neben denen des anderen körpers,
+# sind die eingerasteten schnittpunkte bis zu eps*sqrt(2) voneinander entfernt und lassen sich nicht mehr
+# konsistent zusammenfassen (grenze des toleranzbasierten ansatzes)
+band = pytest.mark.xfail(strict=True, reason='offsets between 1e-5/sqrt(2) and 1e-5 in several directions')
+
+@pytest.mark.parametrize('eps', [ pytest.param(eps, marks=band) if eps == 1e-5 else eps for eps in EPSILONS ] + [ pytest.param(8e-6, marks=band) ])
+def test_near_coplanar_2(eps, tmp_path):
+    check_boxes(UNIT, (.5+eps, 1.5+eps, -eps, 1-eps, eps, 1+eps), tmp_path, rel_tol=SNAP_TOL)
+
+@pytest.mark.parametrize('eps', EPSILONS)
+def test_near_touching(eps, tmp_path):
+    # berühren fast, überlappen minimal
+    check_boxes(UNIT, (1-eps, 2, .25, .75, .25, .75), tmp_path, rel_tol=SNAP_TOL)
+
+@pytest.mark.parametrize('k', range(1, 8))
+def test_sphere_rings(k, tmp_path):
+    # die deckfläche des quaders geht genau durch einen breitenkreis der kugel
+    z = .5*math.cos(k*math.pi/8)
+    check_all_modes(sphere(.5, res=9), box(-.3, .3, -.3, .3, -1, z), d=tmp_path)
+
+def test_sphere_meridian(tmp_path):
+    # die seitenfläche y=0 enthält die kanten eines meridians
+    check_all_modes(sphere(.5, res=8), box(-1, 1, 0, 1, -.3, .3), d=tmp_path)
+
+def test_sphere_meridian_2(tmp_path):
+    check_all_modes(sphere(.5, res=8), box(-1, 1, 0, 1, -1, 1), d=tmp_path)
+
+@pytest.mark.parametrize('angle', [1e-4, 1e-6, 1e-8])
+def test_tiny_rotation(angle, tmp_path):
+    a = box(0, 1, 0, 1, 0, 1)
+    b = rotated(box(.5, 1.5, .5, 1.5, 0, 1), math.degrees(angle), center=(1, 1, .5))
+    check_all_modes(a, b, d=tmp_path)
+
+@pytest.mark.parametrize('angle', [1e-4, 1e-6, 1e-8])
+def test_tiny_rotation_2(angle, tmp_path):
+    a = box(0, 1, 0, 1, 0, 1)
+    b = rotated(box(0, 1, 0, 1, 0, 1), math.degrees(angle), axis=(1, 1, 1), center=(.5, .5, .5))
+    check_all_modes(a, b, d=tmp_path)
