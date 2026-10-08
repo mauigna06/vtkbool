@@ -137,6 +137,8 @@ public:
 
     void GetNonManifoldEdges (vtkPolyData *pd, NonManifoldEdgesType &edges);
 
+    static vtkSmartPointer<vtkPolyData> MergeLinePoints (vtkPolyData *lines, double tol);
+
     void InterEdgeLine (InterPtsType &interPts, const Point3d &pA, const Point3d &pB, Src src);
 
     bool InterPolyLine (InterPtsType &interPts, const Base2 &base, const Poly &poly, Src src);

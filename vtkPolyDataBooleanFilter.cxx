@@ -659,13 +659,14 @@ bool vtkPolyDataBooleanFilter::GetPolyStrips (vtkPolyData *pd, vtkIdTypeArray *c
 
         }
 
-#ifdef DEBUG
         if (!sp.catched) {
+#ifdef DEBUG
             std::cout << sp << std::endl;
-        }
 #endif
 
-        assert(sp.catched);
+            // der punkt liegt auf keiner kante des polygons, aus dem er stammt
+            return true;
+        }
 
     }
 

@@ -902,3 +902,17 @@ def test_contact_near_vertex(s):
     b = scaled(transformed(b, rotation_matrix(45, (1, 0, 0))), 1, (0, -.25, 0))
 
     check_all_modes(scaled(a, s), scaled(b, s))
+
+@pytest.mark.parametrize('s', [.3, .75, 1, 1.5, 3])
+def test_vertex_near_face(s):
+    # eine ecke der kugel liegt knapp innerhalb der toleranz unter einer seite des quaders, die schnittlinie schneidet
+    # die polygone um diese ecke in stücken, die kürzer als die toleranz sind (aus test_fuzz[32])
+
+    x, y, z = 1.4117970783735823, 0.47357408079321683, 1.1380247613806755
+
+    a = box(-x/2, x/2, -y/2, y/2, -z/2, z/2)
+
+    b = transformed(sphere(0.5977514953508448, res=29), rotation_matrix(90, (0, 1, 0)))
+    b = scaled(b, 1, (-.5, .5, .25))
+
+    check_all_modes(scaled(a, s), scaled(b, s))

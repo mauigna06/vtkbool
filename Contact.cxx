@@ -23,6 +23,8 @@ limitations under the License.
 #include <vtkTriangleStrip.h>
 #include <vtkArrayIteratorTemplate.h>
 
+#include <numeric>
+
 // #define _debA 0
 // #define _debB 0
 
@@ -221,31 +223,127 @@ vtkSmartPointer<vtkPolyData> Contact::GetLines (vtkPolyData *pdA, vtkLinearTrans
         throw std::runtime_error("Intersection goes through non-manifold edges.");
     }
 
-    auto clean = vtkSmartPointer<vtkCleanPolyData>::New();
-    clean->SetInputData(lines);
-    clean->ToleranceIsAbsoluteOn();
-    clean->SetAbsoluteTolerance(1e-5);
-    clean->Update();
+    return MergeLinePoints(lines, 1e-5);
+}
 
-    auto cleaned = clean->GetOutput();
+vtkSmartPointer<vtkPolyData> Contact::MergeLinePoints (vtkPolyData *lines, double tol) {
+    // die punkte werden transitiv zusammengefasst: liegen a und b sowie b und c innerhalb der toleranz, wird auch a mit c
+    // vereint (vtkCleanPolyData tut das nicht, verläuft die linie nahe einer ecke, zerfällt sie dann in mehrere teile)
 
-    vtkCellIterator *cellItr = cleaned->NewCellIterator();
+    vtkIdType numPts = lines->GetNumberOfPoints();
 
-    vtkIdType cellId;
+    std::vector<vtkIdType> parents(numPts);
+    std::iota(parents.begin(), parents.end(), 0);
 
-    for (cellItr->InitTraversal(); !cellItr->IsDoneWithTraversal(); cellItr->GoToNextCell()) {
-        cellId = cellItr->GetCellId();
+    auto Find = [&parents](vtkIdType i) {
+        while (parents[i] != i) {
+            parents[i] = parents[parents[i]];
+            i = parents[i];
+        }
+        return i;
+    };
 
-        if (cellItr->GetCellType() != VTK_LINE) {
-            cleaned->DeleteCell(cellId);
+    vtkIdType i, j;
+
+    double pt[3];
+
+    if (numPts > 0) {
+        auto loc = vtkSmartPointer<vtkKdTreePointLocator>::New();
+        loc->SetDataSet(lines);
+        loc->BuildLocator();
+
+        auto found = vtkSmartPointer<vtkIdList>::New();
+
+        for (i = 0; i < numPts; i++) {
+            lines->GetPoint(i, pt);
+
+            FindPoints(loc, pt, found, tol);
+
+            for (j = 0; j < found->GetNumberOfIds(); j++) {
+                vtkIdType a = Find(i),
+                    b = Find(found->GetId(j));
+
+                // der kleinste index bleibt erhalten
+                if (a < b) {
+                    parents[b] = a;
+                } else if (b < a) {
+                    parents[a] = b;
+                }
+            }
         }
     }
 
-    cellItr->Delete();
+    vtkIdType numCells = lines->GetNumberOfCells();
 
-    cleaned->RemoveDeletedCells();
+    auto newPts = vtkSmartPointer<vtkPoints>::New();
+    newPts->SetDataTypeToDouble();
 
-    return cleaned;
+    auto merged = vtkSmartPointer<vtkPolyData>::New();
+    merged->SetPoints(newPts);
+    merged->Allocate(numCells);
+
+    merged->GetCellData()->CopyAllocate(lines->GetCellData(), numCells);
+
+    // die zusammengefassten punkte werden durch ihren schwerpunkt ersetzt, er liegt am nächsten an allen beteiligten kanten
+
+    std::map<vtkIdType, std::array<double, 4>> centers;
+
+    for (i = 0; i < numPts; i++) {
+        lines->GetPoint(i, pt);
+
+        auto &c = centers[Find(i)];
+
+        c[0] += pt[0];
+        c[1] += pt[1];
+        c[2] += pt[2];
+        c[3] += 1;
+    }
+
+    std::map<vtkIdType, vtkIdType> newIds;
+
+    auto GetNewId = [&](vtkIdType id) {
+        auto itr = newIds.find(id);
+
+        if (itr != newIds.end()) {
+            return itr->second;
+        }
+
+        const auto &c = centers.at(id);
+
+        vtkIdType newId = newPts->InsertNextPoint(c[0]/c[3], c[1]/c[3], c[2]/c[3]);
+        newIds.emplace(id, newId);
+
+        return newId;
+    };
+
+    vtkIdType num;
+    const vtkIdType *line;
+
+    for (i = 0; i < numCells; i++) {
+        if (lines->GetCellType(i) != VTK_LINE) {
+            continue;
+        }
+
+        lines->GetCellPoints(i, num, line);
+
+        vtkIdType a = Find(line[0]),
+            b = Find(line[1]);
+
+        // zu punkten entartete linien entfallen
+        if (a == b) {
+            continue;
+        }
+
+        const vtkIdType newLine[] = {GetNewId(a), GetNewId(b)};
+
+        vtkIdType cellId = merged->InsertNextCell(VTK_LINE, 2, newLine);
+
+        merged->GetCellData()->CopyData(lines->GetCellData(), i, cellId);
+    }
+
+    merged->Squeeze();
+
+    return merged;
 }
 
 void Contact::GetCellBounds (vtkPolyData *pd, std::vector<std::array<double, 6>> &bounds) {
@@ -397,6 +495,17 @@ bool Contact::InterPolyLine (InterPtsType &interPts, const Base2 &base, const Po
         const double tol = 1e-5;
 
         bool operator() (const InterPt &lhs, const InterPt &rhs) const {
+            if (lhs.pointSrc == PointSrc::Calculated && rhs.pointSrc == PointSrc::Calculated
+                && lhs.end == End::None && rhs.end == End::None
+                && (lhs.edge.f == rhs.edge.g || lhs.edge.g == rhs.edge.f)) {
+
+                // zwei benachbarte kanten werden nahe ihrer gemeinsamen ecke geschnitten, die linie schneidet
+                // die ecke ab; das kurze stück ist kein doppelter punkt und muss erhalten bleiben, sonst fehlt
+                // es zw. den schnittpunkten der angrenzenden polygone
+
+                return lhs.t < rhs.t;
+            }
+
             if (lhs.pointSrc == PointSrc::Copied && rhs.pointSrc == PointSrc::Copied) {
                 if (lhs.GetEnd() == rhs.GetEnd()) {
                     return false;
