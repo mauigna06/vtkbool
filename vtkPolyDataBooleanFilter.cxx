@@ -28,6 +28,7 @@ limitations under the License.
 #include <chrono>
 #include <numeric>
 #include <iterator>
+#include <limits>
 
 #include <vtkInformation.h>
 #include <vtkInformationVector.h>
@@ -448,6 +449,9 @@ void vtkPolyDataBooleanFilter::GetStripPoints (vtkPolyData *pd, vtkIdTypeArray *
 
         IdsType::const_iterator itrA, itrB;
 
+        // nahe einer ecke liegt der punkt innerhalb der toleranz mehrerer kanten, gewählt wird die nächste
+        double minD = std::numeric_limits<double>::infinity();
+
         for (itrA = poly.begin(); itrA != poly.end(); ++itrA) {
             itrB = itrA+1;
 
@@ -478,7 +482,9 @@ void vtkPolyDataBooleanFilter::GetStripPoints (vtkPolyData *pd, vtkIdTypeArray *
             vtkMath::Cross(v, u, w);
             d = vtkMath::Norm(w)/n;
 
-            if (d < 1e-5 && t > -1e-5 && t < 1+1e-5) {
+            if (d < 1e-5 && t > -1e-5 && t < 1+1e-5 && d <= minD) {
+                minD = d;
+
                 sp.edge[0] = *itrA;
                 sp.edge[1] = *itrB;
 

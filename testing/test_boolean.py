@@ -888,3 +888,17 @@ def test_disjoint():
     # keine berührung: bekannte einschränkung, aber kein absturz
     bf, errors = run_boolean(box(*UNIT), box(2, 3, 2, 3, 2, 3), OPER_UNION)
     assert errors
+
+# level 8: aus zufälligen fällen gewonnene tests
+
+@pytest.mark.parametrize('s', [.75, 1.5, 193])
+def test_contact_near_vertex(s):
+    # ein schnittpunkt liegt genau auf einer kante und innerhalb der toleranz einer anderen kante der gleichen ecke,
+    # er muss der nächsten kante zugeordnet werden (aus test_fuzz[53])
+
+    a = torus(0.9266030039270914, 0.1527190191896381, 22, 15)
+
+    b = scaled(extrude_polygon(star(7, 0.9684906516891164, 0.43823622049112826), 0.8455704932930983), 1, (0, 0, -.5))
+    b = scaled(transformed(b, rotation_matrix(45, (1, 0, 0))), 1, (0, -.25, 0))
+
+    check_all_modes(scaled(a, s), scaled(b, s))
