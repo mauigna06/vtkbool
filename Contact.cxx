@@ -886,10 +886,10 @@ void Contact::IntersectReplacements () {
     while (!pairs.empty()) {
         vtkIdType i;
 
-        auto iterA = vtkArrayIteratorTemplate<vtkIdType>::New();
+        auto iterA = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
         iterA->Initialize(contA);
 
-        auto iterB = vtkArrayIteratorTemplate<vtkIdType>::New();
+        auto iterB = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
         iterB->Initialize(contB);
 
         for (i = 0; i < iterA->GetNumberOfValues(); i++) {
@@ -987,14 +987,14 @@ void Contact::IntersectReplacements () {
 
     std::map<vtkIdType, vtkIdType> newCellIdsA, newCellIdsB;
 
-    auto iterA = vtkArrayIteratorTemplate<vtkIdType>::New();
+    auto iterA = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
     iterA->Initialize(oldCellIdsA);
 
     for (i = 0; i < numCellsA; i++) {
         newCellIdsA.emplace(iterA->GetValue(i), i);
     }
 
-    auto iterB = vtkArrayIteratorTemplate<vtkIdType>::New();
+    auto iterB = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
     iterB->Initialize(oldCellIdsB);
 
     for (i = 0; i < numCellsB; i++) {
@@ -1005,14 +1005,14 @@ void Contact::IntersectReplacements () {
 
     try {
 
-        auto _iterA = vtkArrayIteratorTemplate<vtkIdType>::New();
+        auto _iterA = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
         _iterA->Initialize(contA);
 
         for (i = 0; i < numLines; i++) {
             _iterA->SetValue(i, newCellIdsA.at(_iterA->GetValue(i)));
         }
 
-        auto _iterB = vtkArrayIteratorTemplate<vtkIdType>::New();
+        auto _iterB = vtkSmartPointer<vtkArrayIteratorTemplate<vtkIdType>>::New();
         _iterB->Initialize(contB);
 
         for (i = 0; i < numLines; i++) {
