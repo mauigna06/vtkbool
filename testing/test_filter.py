@@ -27,7 +27,7 @@ from functools import reduce
 from vtkmodules.vtkCommonCore import vtkIdList, vtkIdTypeArray, vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, VTK_POLYGON
 from vtkmodules.vtkFiltersSources import vtkCubeSource, vtkCylinderSource, vtkSphereSource, vtkPolyLineSource
-from vtkmodules.vtkCommonDataModel import vtkKdTreePointLocator
+from vtkmodules.vtkCommonDataModel import vtkStaticPointLocator
 from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkCleanPolyData, vtkPolyDataNormals
 from vtkmodules.vtkIOLegacy import vtkPolyDataWriter, vtkPolyDataReader
 from vtkmodules.vtkCommonExecutionModel import vtkTrivialProducer
@@ -39,7 +39,7 @@ from vtkmodules.vtkFiltersModeling import vtkLinearExtrusionFilter
 
 from vtkbool import vtkPolyDataBooleanFilter
 
-def check_result(bf, expected_regs=None):
+def check_result(bf, expected_regs=None, tol=1e-5):
     lines = bf.GetOutput(2)
 
     lines.BuildLinks()
@@ -74,7 +74,8 @@ def check_result(bf, expected_regs=None):
     for name, pd in [('pdA', pdA), ('pdB', pdB)]:
         print(f'checking {name}')
 
-        loc = vtkKdTreePointLocator()
+        # rechnet im gegensatz zu vtkKdTreePointLocator mit double
+        loc = vtkStaticPointLocator()
         loc.SetDataSet(pd)
         loc.BuildLocator()
 
@@ -107,8 +108,8 @@ def check_result(bf, expected_regs=None):
             ptsA = vtkIdList()
             ptsB = vtkIdList()
 
-            loc.FindPointsWithinRadius(1e-5, ptA, ptsA)
-            loc.FindPointsWithinRadius(1e-5, ptB, ptsB)
+            loc.FindPointsWithinRadius(tol, ptA, ptsA)
+            loc.FindPointsWithinRadius(tol, ptB, ptsB)
 
             neigs = defaultdict(list)
 
@@ -128,9 +129,7 @@ def check_result(bf, expected_regs=None):
                     equal_points = defaultdict(list)
 
                     for point_id in point_ids:
-                        x, y, z = pd.GetPoint(point_id)
-
-                        equal_points[f'{x:.5f},{y:.5f},{z:.5f}'].append(point_id)
+                        equal_points[tuple(round(c/tol) for c in pd.GetPoint(point_id))].append(point_id)
 
                     groups = list(equal_points.values())
 

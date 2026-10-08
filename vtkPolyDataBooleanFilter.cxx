@@ -48,6 +48,7 @@ limitations under the License.
 #include <vtkKdTree.h>
 #include <vtkCellIterator.h>
 #include <vtkTransformPolyDataFilter.h>
+#include <vtkTransform.h>
 
 #include "vtkPolyDataBooleanFilter.h"
 
@@ -87,6 +88,9 @@ vtkPolyDataBooleanFilter::vtkPolyDataBooleanFilter () {
 
     timeMatrixA = 0;
     timeMatrixB = 0;
+
+    normScale = 1;
+    std::fill_n(normCenter, 3, 0);
 
 }
 
@@ -141,8 +145,10 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
                 cellDataA->DeepCopy(pdA->GetCellData());
                 cellDataB->DeepCopy(pdB->GetCellData());
 
-                cleanA = Clean(pdA);
-                cleanB = Clean(pdB);
+                ComputeNormalization(pdA, pdB);
+
+                cleanA = Clean(Normalize(pdA));
+                cleanB = Clean(Normalize(pdB));
 
 #ifdef DEBUG
                 WriteVTK("modPdA.vtk", cleanA);
@@ -164,10 +170,13 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
             modPdA = vtkSmartPointer<vtkPolyData>::New();
             modPdB = vtkSmartPointer<vtkPolyData>::New();
 
-            if (transforms[0] != nullptr) {
+            auto transA = GetNormalizedTransform(0);
+            auto transB = GetNormalizedTransform(1);
+
+            if (transA != nullptr) {
                 auto tfA = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
                 tfA->SetInputData(cleanA);
-                tfA->SetTransform(transforms[0]);
+                tfA->SetTransform(transA);
                 tfA->Update();
 
                 modPdA->DeepCopy(tfA->GetOutput());
@@ -175,10 +184,10 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
                 modPdA->DeepCopy(cleanA);
             }
 
-            if (transforms[1] != nullptr) {
+            if (transB != nullptr) {
                 auto tfB = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
                 tfB->SetInputData(cleanB);
-                tfB->SetTransform(transforms[1]);
+                tfB->SetTransform(transB);
                 tfB->Update();
 
                 modPdB->DeepCopy(tfB->GetOutput());
@@ -190,7 +199,7 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
             modPdB->EditableOn();
 
             try {
-                contLines = contact->GetLines(modPdA, transforms[0], modPdB, transforms[1]);
+                contLines = contact->GetLines(modPdA, transA, modPdB, transB);
             } catch (const std::runtime_error &e) {
                 std::stringstream ss;
                 ss << std::quoted(e.what());
@@ -368,6 +377,10 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
             vtkErrorMacro("Boolean operation failed.");
             return 1;
         }
+
+        Denormalize(resultA);
+        Denormalize(resultB);
+        Denormalize(resultC);
 
         times.push_back(clock::now()-start);
 
@@ -3086,6 +3099,127 @@ bool vtkPolyDataBooleanFilter::CombineRegions () {
 
     return false;
 
+}
+
+void vtkPolyDataBooleanFilter::ComputeNormalization (vtkPolyData *pdA, vtkPolyData *pdB) {
+    // skaliert wird mit einer zweierpotenz (exakt), sodass die diagonale der gemeinsamen bounding-box in [1, 2) liegt,
+    // verschoben wird nur, wenn die eingaben weit vom ursprung entfernt liegen
+
+    normScale = 1;
+    std::fill_n(normCenter, 3, 0);
+
+    double bnds[] = {VTK_DOUBLE_MAX, VTK_DOUBLE_MIN, VTK_DOUBLE_MAX, VTK_DOUBLE_MIN, VTK_DOUBLE_MAX, VTK_DOUBLE_MIN};
+
+    for (vtkPolyData *pd : {pdA, pdB}) {
+        if (pd->GetNumberOfPoints() == 0) {
+            continue;
+        }
+
+        const double *b = pd->GetBounds();
+
+        for (int i = 0; i < 3; i++) {
+            bnds[2*i] = std::min(bnds[2*i], b[2*i]);
+            bnds[2*i+1] = std::max(bnds[2*i+1], b[2*i+1]);
+        }
+    }
+
+    if (bnds[0] > bnds[1]) {
+        return;
+    }
+
+    double diag = std::sqrt((bnds[1]-bnds[0])*(bnds[1]-bnds[0])+(bnds[3]-bnds[2])*(bnds[3]-bnds[2])+(bnds[5]-bnds[4])*(bnds[5]-bnds[4]));
+
+    if (diag == 0 || !std::isfinite(diag)) {
+        return;
+    }
+
+    int exp = std::ilogb(diag);
+
+    normScale = std::ldexp(1., -exp);
+
+    // raster, auf das der mittelpunkt gerundet wird
+    double grid = std::ldexp(1., exp+4);
+
+    for (int i = 0; i < 3; i++) {
+        normCenter[i] = std::round((bnds[2*i]+bnds[2*i+1])/2/grid)*grid;
+    }
+}
+
+vtkSmartPointer<vtkPolyData> vtkPolyDataBooleanFilter::Normalize (vtkPolyData *pd) const {
+    auto normalized = vtkSmartPointer<vtkPolyData>::New();
+    normalized->ShallowCopy(pd);
+
+    vtkPoints *pts = pd->GetPoints();
+
+    if (pts == nullptr) {
+        return normalized;
+    }
+
+    auto newPts = vtkSmartPointer<vtkPoints>::New();
+    newPts->SetDataTypeToDouble();
+    newPts->SetNumberOfPoints(pts->GetNumberOfPoints());
+
+    double pt[3];
+
+    for (vtkIdType i = 0; i < pts->GetNumberOfPoints(); i++) {
+        pts->GetPoint(i, pt);
+
+        for (int j = 0; j < 3; j++) {
+            pt[j] = (pt[j]-normCenter[j])*normScale;
+        }
+
+        newPts->SetPoint(i, pt);
+    }
+
+    normalized->SetPoints(newPts);
+
+    return normalized;
+}
+
+void vtkPolyDataBooleanFilter::Denormalize (vtkPolyData *pd) const {
+    vtkPoints *pts = pd->GetPoints();
+
+    if (pts == nullptr || (normScale == 1 && normCenter[0] == 0 && normCenter[1] == 0 && normCenter[2] == 0)) {
+        return;
+    }
+
+    // neue punkte, die alten gehören ggf. zu den zwischengespeicherten daten
+
+    auto newPts = vtkSmartPointer<vtkPoints>::New();
+    newPts->SetDataTypeToDouble();
+    newPts->SetNumberOfPoints(pts->GetNumberOfPoints());
+
+    double pt[3];
+
+    for (vtkIdType i = 0; i < pts->GetNumberOfPoints(); i++) {
+        pts->GetPoint(i, pt);
+
+        for (int j = 0; j < 3; j++) {
+            pt[j] = pt[j]/normScale+normCenter[j];
+        }
+
+        newPts->SetPoint(i, pt);
+    }
+
+    pd->SetPoints(newPts);
+}
+
+vtkSmartPointer<vtkLinearTransform> vtkPolyDataBooleanFilter::GetNormalizedTransform (int i) const {
+    if (transforms[i] == nullptr) {
+        return nullptr;
+    }
+
+    // die matrix wirkt auf die originalen koordinaten
+
+    auto transform = vtkSmartPointer<vtkTransform>::New();
+    transform->PostMultiply();
+    transform->Scale(1/normScale, 1/normScale, 1/normScale);
+    transform->Translate(normCenter);
+    transform->Concatenate(transforms[i]->GetMatrix());
+    transform->Translate(-normCenter[0], -normCenter[1], -normCenter[2]);
+    transform->Scale(normScale, normScale, normScale);
+
+    return transform;
 }
 
 void vtkPolyDataBooleanFilter::SetMatrix (int i, vtkMatrix4x4 *matrix) {

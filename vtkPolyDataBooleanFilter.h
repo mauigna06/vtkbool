@@ -201,6 +201,14 @@ class VTK_EXPORT vtkPolyDataBooleanFilter : public vtkPolyDataAlgorithm {
 
     std::shared_ptr<Contact> contact;
 
+    // die toleranzen sind absolut, gerechnet wird daher in normierten koordinaten (x-normCenter)*normScale
+    double normScale, normCenter[3];
+
+    void ComputeNormalization (vtkPolyData *pdA, vtkPolyData *pdB);
+    vtkSmartPointer<vtkPolyData> Normalize (vtkPolyData *pd) const;
+    void Denormalize (vtkPolyData *pd) const;
+    vtkSmartPointer<vtkLinearTransform> GetNormalizedTransform (int i) const;
+
     vtkMTimeType timeMatrixA, timeMatrixB;
 
 public:

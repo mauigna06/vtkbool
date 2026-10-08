@@ -104,6 +104,18 @@ def diagonal(pd):
     b = pd.GetBounds()
     return math.sqrt(sum((b[2*i+1]-b[2*i])**2 for i in range(3)))
 
+def internal_tol(pdA, pdB):
+    # der filter rechnet mit 1e-5 in koordinaten, in denen die diagonale der gemeinsamen bounding-box in [1, 2) liegt
+
+    a = pdA.GetBounds()
+    b = pdB.GetBounds()
+
+    diag = math.sqrt(sum((max(a[2*i+1], b[2*i+1])-min(a[2*i], b[2*i]))**2 for i in range(3)))
+
+    _, e = math.frexp(diag)
+
+    return 1e-5*2**(e-1)
+
 def merged(pd, tol):
     clean = vtkCleanPolyData()
     clean.SetInputData(pd)
@@ -120,7 +132,7 @@ def surface_props(pd, tol=None):
     """returns (signed volume, list of defective edges) of the merged surface"""
 
     if tol is None:
-        tol = 1e-6*max(1., diagonal(pd))
+        tol = 1e-6*diagonal(pd)
 
     pd = merged(pd, tol)
 
@@ -243,7 +255,7 @@ def check_all_modes(srcA, srcB, expected=None, rel_tol=1e-6, d=None, none=True, 
     if none:
         bf, errors = run_boolean(srcA, srcB, OPER_NONE, matrices)
         assert not errors, errors
-        check_result(bf)
+        check_result(bf, tol=internal_tol(get_pd(srcA), get_pd(srcB)))
 
     return vols
 
@@ -390,14 +402,19 @@ SNAP_TOL = 2e-5
 def test_near_coplanar(eps, tmp_path):
     check_boxes(UNIT, (.5, 1.5, .25, 1.25, eps, 1+eps), tmp_path, rel_tol=SNAP_TOL)
 
+@pytest.mark.parametrize('eps', EPSILONS)
+def test_near_coplanar_2(eps, tmp_path):
+    check_boxes(UNIT, (.5+eps, 1.5+eps, -eps, 1-eps, eps, 1+eps), tmp_path, rel_tol=SNAP_TOL)
+
 # liegen die flächen in mehreren richtungen knapp innerhalb der toleranz neben denen des anderen körpers,
 # sind die eingerasteten schnittpunkte bis zu eps*sqrt(2) voneinander entfernt und lassen sich nicht mehr
 # konsistent zusammenfassen (grenze des toleranzbasierten ansatzes)
-band = pytest.mark.xfail(strict=True, reason='offsets between 1e-5/sqrt(2) and 1e-5 in several directions')
 
-@pytest.mark.parametrize('eps', [ pytest.param(eps, marks=band) if eps == 1e-5 else eps for eps in EPSILONS ] + [ pytest.param(8e-6, marks=band) ])
-def test_near_coplanar_2(eps, tmp_path):
-    check_boxes(UNIT, (.5+eps, 1.5+eps, -eps, 1-eps, eps, 1+eps), tmp_path, rel_tol=SNAP_TOL)
+@pytest.mark.xfail(strict=True, reason='offsets between tol/sqrt(2) and tol in several directions')
+@pytest.mark.parametrize('f', [.75, .85, .95, .999])
+def test_near_coplanar_band(f):
+    eps = f*internal_tol(get_pd(box(*UNIT)), get_pd(box(.5, 1.5, 0, 1, 0, 1)))
+    check_boxes(UNIT, (.5+eps, 1.5+eps, -eps, 1-eps, eps, 1+eps), rel_tol=SNAP_TOL)
 
 @pytest.mark.parametrize('eps', EPSILONS)
 def test_near_touching(eps, tmp_path):
@@ -428,3 +445,86 @@ def test_tiny_rotation_2(angle, tmp_path):
     a = box(0, 1, 0, 1, 0, 1)
     b = rotated(box(0, 1, 0, 1, 0, 1), math.degrees(angle), axis=(1, 1, 1), center=(.5, .5, .5))
     check_all_modes(a, b, d=tmp_path)
+
+# level 4: drehungen, auch über SetMatrix
+
+def rotation_matrix(angle, axis, center=(0, 0, 0)):
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.Translate(*[ -c for c in center ])
+    tra.RotateWXYZ(angle, *axis)
+    tra.Translate(*center)
+    return tra.GetMatrix()
+
+AXES = {'z': (0, 0, 1), 'xy': (1, 1, 0), 'xyz': (1, 1, 1), 'skew': (.3, -.7, .2)}
+
+def check_rotated(srcA, srcB, angle, axis, center, rel_tol=1e-6):
+    # einmal vorab transformiert, einmal über die matrix des filters
+
+    m = rotation_matrix(angle, axis, center)
+
+    vols = check_all_modes(srcA, transformed(srcB, m), rel_tol=rel_tol)
+    vols2 = check_all_modes(srcA, srcB, rel_tol=rel_tol, matrices=[None, m], none=False)
+
+    scale = max(volume(srcA), volume(srcB))
+
+    for name in MODES:
+        assert vols2[name] == pytest.approx(vols[name], rel=0, abs=rel_tol*scale), name
+
+@pytest.mark.parametrize('axis', AXES.keys())
+@pytest.mark.parametrize('angle', range(0, 91, 3))
+def test_rotated_boxes(angle, axis):
+    check_rotated(box(*UNIT), box(.4, 1.4, .3, 1.3, .2, 1.2), angle, AXES[axis], (.9, .8, .7))
+
+@pytest.mark.parametrize('axis', AXES.keys())
+@pytest.mark.parametrize('angle', range(0, 91, 15))
+def test_rotated_boxes_centered(angle, axis):
+    # gleicher mittelpunkt, viele koplanare und kollineare lagen
+    check_rotated(box(*UNIT), box(.25, .75, .25, .75, -.5, 1.5), angle, AXES[axis], (.5, .5, .5))
+
+@pytest.mark.parametrize('angle', range(0, 181, 20))
+def test_rotated_spheres(angle):
+    check_rotated(sphere(.5, res=18), sphere(.45, (.2, .1, 0), 13), angle, (.2, 1, .4), (0, 0, 0))
+
+@pytest.mark.parametrize('angle', range(0, 91, 10))
+def test_rotated_cylinder(angle):
+    check_rotated(box(-.5, .5, -.5, .5, -.5, .5), cylinder(.3, 2, res=20), angle, (1, 0, 0), (0, 0, 0))
+
+# level 5: maßstab und lage
+
+def scaled(src, s, t=(0, 0, 0)):
+    tra = vtkTransform()
+    tra.PostMultiply()
+    tra.Scale(s, s, s)
+    tra.Translate(*t)
+
+    tf = vtkTransformPolyDataFilter()
+    tf.SetTransform(tra)
+    tf.SetInputConnection(producer(src).GetOutputPort())
+    tf.SetOutputPointsPrecision(vtkAlgorithm.DOUBLE_PRECISION)
+
+    return tf
+
+SCALES = [1e-4, 1e-3, 1e-2, 1e2, 1e3, 1e4, 1e6]
+
+scale_cases = {
+    'offset_boxes': lambda: (box(*UNIT), box(.5, 1.5, .25, 1.25, .3, 1.3)),
+    'box_sphere': lambda: (box(-.5, .5, -.5, .5, -.5, .5), sphere(.6, (.3, .2, .1))),
+    'drilled_box': lambda: (box(-.5, .5, -.5, .5, -.5, .5), cylinder(.3, 2, res=32)),
+    'shared_2_faces': lambda: (box(*UNIT), box(.5, 1.5, .5, 1.5, 0, 1)),
+    'flush_through': lambda: (box(*UNIT), box(0, 1, .25, .75, .25, .75)),
+    'cylinder_caps': lambda: (box(-.5, .5, -.5, .5, -.5, .5), cylinder(.3, 1, res=32)),
+    'rotated_boxes': lambda: (box(*UNIT), transformed(box(.4, 1.4, .3, 1.3, .2, 1.2), rotation_matrix(30, (1, 1, 1), (.9, .8, .7))))
+}
+
+@pytest.mark.parametrize('s', SCALES)
+@pytest.mark.parametrize('name', scale_cases.keys())
+def test_scaled(name, s):
+    a, b = scale_cases[name]()
+    check_all_modes(scaled(a, s), scaled(b, s))
+
+@pytest.mark.parametrize('t', [1e3, 1e4, 1e6])
+@pytest.mark.parametrize('name', scale_cases.keys())
+def test_translated(name, t):
+    a, b = scale_cases[name]()
+    check_all_modes(scaled(a, 1, (t, -t/2, t/3)), scaled(b, 1, (t, -t/2, t/3)))
