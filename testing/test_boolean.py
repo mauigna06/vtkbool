@@ -1057,6 +1057,46 @@ def enclosed(pdA, pdB):
 
     return sum(sel.IsInside(i) for i in range(n))/n
 
+def proper_overlap(pdA, pdB, n=3000):
+    # haben die körper ein gemeinsames volumen, ohne dass einer im anderen liegt? (stichprobe über vorzeichenbehaftete abstände,
+    # punkte nahe der oberflächen zählen nicht, berührungen sind also keine überlappung)
+
+    from vtkmodules.vtkFiltersCore import vtkImplicitPolyDataDistance
+
+    dists = []
+
+    for pd in (pdA, pdB):
+        tri = vtkTriangleFilter()
+        tri.SetInputData(pd)
+        tri.Update()
+
+        dist = vtkImplicitPolyDataDistance()
+        dist.SetInput(tri.GetOutput())
+        dists.append(dist)
+
+    a, b = pdA.GetBounds(), pdB.GetBounds()
+    bnds = [ f(a[i], b[i]) for i in range(6) for f in [min if i%2 == 0 else max] ]
+
+    m = 1e-6*math.sqrt(sum((bnds[2*i+1]-bnds[2*i])**2 for i in range(3)))
+
+    rng = random.Random(0)
+
+    both = onlyA = onlyB = 0
+
+    for _ in range(n):
+        pt = [ rng.uniform(bnds[2*i], bnds[2*i+1]) for i in range(3) ]
+
+        dA, dB = dists[0].EvaluateFunction(pt), dists[1].EvaluateFunction(pt)
+
+        if abs(dA) < m or abs(dB) < m:
+            continue
+
+        both += dA < 0 and dB < 0
+        onlyA += dA < 0 and dB > 0
+        onlyB += dA > 0 and dB < 0
+
+    return both > 0 and onlyA > 0 and onlyB > 0
+
 def fuzz_case(seed, plain=False):
     rng = random.Random(seed)
 
@@ -1089,11 +1129,8 @@ def test_fuzz(seed):
     bf, errors = run_boolean(pdA, pdB, OPER_UNION)
 
     if any('There is no contact.' in e for e in errors):
-        # nur erlaubt, wenn sich die oberflächen tatsächlich nicht schneiden
-        inA = enclosed(pdB, pdA)
-        inB = enclosed(pdA, pdB)
-
-        if inA in (0, 1) and inB in (0, 1):
+        # nur erlaubt, wenn die körper sich höchstens berühren oder einer im anderen liegt
+        if not proper_overlap(pdA, pdB):
             pytest.skip(f'no contact: {desc}')
 
     check_fuzz(pdA, pdB, desc, seed)
@@ -1152,10 +1189,8 @@ def test_fuzz_grid(seed):
     bf, errors = run_boolean(pdA, pdB, OPER_UNION)
 
     if any('There is no contact.' in e for e in errors):
-        inA = enclosed(pdB, pdA)
-        inB = enclosed(pdA, pdB)
-
-        if inA in (0, 1) and inB in (0, 1):
+        # nur erlaubt, wenn die körper sich höchstens berühren oder einer im anderen liegt
+        if not proper_overlap(pdA, pdB):
             pytest.skip(f'no contact: {desc}')
 
     check_fuzz(pdA, pdB, desc, seed)
