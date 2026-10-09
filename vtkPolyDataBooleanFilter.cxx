@@ -2619,6 +2619,9 @@ public:
 
     Loc loc;
 
+    // über die winkel bestimmt (und nicht über kongruente polygone)
+    bool angular {false};
+
     friend std::ostream& operator<< (std::ostream &out, const PolyAtEdge &p) {
         out << "polyId " << p.polyId << ", ptIdA " << p.ptIdA << ", ptIdB " << p.ptIdB;
         return out;
@@ -2712,6 +2715,8 @@ public:
             } else {
                 pT.loc = Loc::Outside;
             }
+
+            pT.angular = true;
         }
     }
 
@@ -2884,7 +2889,13 @@ bool vtkPolyDataBooleanFilter::CombineRegions () {
 
     std::map<vtkIdType, Loc> locsA, locsB;
 
-    vtkIdType i, j, numLines = contLines->GetNumberOfCells();
+    // trennen die schnittlinien eine oberfläche nicht vollständig, liegt eine region zugleich innen und außen;
+    // solche regionen grenzen an beiden seiten an eine schnittlinie und werden widersprüchlich eingeordnet
+
+    std::map<vtkIdType, std::set<Loc>> angularLocsA, angularLocsB;
+    std::set<vtkIdType> notSeparatedA, notSeparatedB;
+
+    vtkIdType i, numLines = contLines->GetNumberOfCells();
 
     IdsType _failed;
 
@@ -2904,28 +2915,6 @@ bool vtkPolyDataBooleanFilter::CombineRegions () {
 
 #ifdef DEBUG
         std::cout << "line " << i << std::endl;
-#else
-
-        // bereits behandelte regionen werden nicht noch einmal untersucht
-
-        vtkIdType notLocated = 0;
-
-        for (j = 0; j < fptsA->GetNumberOfIds(); j++) {
-            if (locsA.count(scalarsA->GetValue(fptsA->GetId(j))) == 0) {
-                notLocated++;
-            }
-        }
-
-        for (j = 0; j < fptsB->GetNumberOfIds(); j++) {
-            if (locsB.count(scalarsB->GetValue(fptsB->GetId(j))) == 0) {
-                notLocated++;
-            }
-        }
-
-        if (notLocated == 0) {
-            continue;
-        }
-
 #endif
 
         FindPoints(plA, ptB, lptsA);
@@ -2978,6 +2967,22 @@ bool vtkPolyDataBooleanFilter::CombineRegions () {
             locsB.emplace(fsB, ppB->pA.loc);
             locsB.emplace(lsB, ppB->pB.loc);
 
+            if (fsA == lsA) {
+                notSeparatedA.insert(fsA);
+            }
+
+            if (fsB == lsB) {
+                notSeparatedB.insert(fsB);
+            }
+
+            for (auto [locs, r, p] : {std::make_tuple(&angularLocsA, fsA, &ppA->pA), std::make_tuple(&angularLocsA, lsA, &ppA->pB),
+                std::make_tuple(&angularLocsB, fsB, &ppB->pA), std::make_tuple(&angularLocsB, lsB, &ppB->pB)}) {
+
+                if (p->angular) {
+                    (*locs)[r].insert(p->loc);
+                }
+            }
+
         } else {
             _failed.push_back(i);
         }
@@ -2993,6 +2998,14 @@ bool vtkPolyDataBooleanFilter::CombineRegions () {
 #endif
 
         return true;
+    }
+
+    for (auto [notSeparated, angularLocs] : {std::make_pair(&notSeparatedA, &angularLocsA), std::make_pair(&notSeparatedB, &angularLocsB)}) {
+        for (auto r : *notSeparated) {
+            if ((*angularLocs)[r].size() > 1) {
+                return true;
+            }
+        }
     }
 
     // reale kombination der ermittelten regionen

@@ -1327,6 +1327,27 @@ def test_overlap_near_vertex():
 
     check_fuzz(pdA, pdB, desc, 127)
 
+def test_no_silent_failure():
+    # trennen die schnittlinien eine oberfläche nicht vollständig (punkte nahe einer ecke einer verrauschten kugel), muss
+    # der filter einen fehler melden statt ein falsches ergebnis zu liefern (aus test_fuzz_noisy[1019])
+
+    pdA, pdB, desc = fuzz_case_noisy(1019)
+
+    for name, mode in MODES.items():
+        bf, errors = run_boolean(pdA, pdB, mode)
+
+        if not errors:
+            check_solid(bf, errors)
+
+@pytest.mark.xfail(strict=True, reason='known failures with irregular meshes, see the comments')
+@pytest.mark.parametrize('seed', [
+    1019, # die schnittlinien trennen die kugel nahe einer ecke nicht, der filter meldet "Boolean operation failed"
+    1212 # ein stück der schnittlinie fehlt ("At least one line-end has only one neighbor", auch vor allen änderungen)
+])
+def test_noisy_known_failures(seed):
+    pdA, pdB, desc = fuzz_case_noisy(seed)
+    check_fuzz(pdA, pdB, desc, seed)
+
 # bekannte grenzen des toleranzbasierten ansatzes: schnittpunkte liegen um die toleranz von einer ecke und voneinander
 # entfernt, das einrasten fällt in den angrenzenden polygonen unterschiedlich aus (vgl. test_near_coplanar_band)
 NOISY_LIMITS = {
