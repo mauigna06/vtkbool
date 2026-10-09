@@ -1226,3 +1226,122 @@ def test_fuzz_grid(seed):
             pytest.skip(f'no contact: {desc}')
 
     check_fuzz(pdA, pdB, desc, seed)
+
+# unregelmäßige netze (verrauschte punkte, wie bei gescannten oder segmentierten oberflächen)
+
+def folded(pd):
+    # benachbarte dreiecke mit entgegengesetzten normalen (das netz durchdringt sich selbst, wird nicht unterstützt)
+    from vtkmodules.vtkCommonDataModel import vtkPolygon
+    from vtkmodules.vtkCommonCore import vtkIdList
+
+    pd.BuildLinks()
+
+    norms = []
+
+    for c in range(pd.GetNumberOfCells()):
+        n = [0, 0, 0]
+        vtkPolygon.ComputeNormal(pd.GetCell(c).GetPoints(), n)
+        norms.append(n)
+
+    neigs = vtkIdList()
+
+    for c in range(pd.GetNumberOfCells()):
+        cell = pd.GetCell(c)
+        ids = [ cell.GetPointId(j) for j in range(cell.GetNumberOfPoints()) ]
+
+        for a, b in zip(ids, ids[1:]+ids[:1]):
+            pd.GetCellEdgeNeighbors(c, a, b, neigs)
+
+            for k in range(neigs.GetNumberOfIds()):
+                if sum(x*y for x, y in zip(norms[c], norms[neigs.GetId(k)])) < 0:
+                    return True
+
+    return False
+
+def noisy(src, rng, rel):
+    # verrauscht relativ zur kürzesten kante, damit keine dreiecke umklappen
+
+    tri = vtkTriangleFilter()
+    tri.SetInputData(merged(get_pd(src), 1e-9))
+    tri.Update()
+
+    orig = tri.GetOutput()
+
+    edge = min( math.dist(orig.GetPoint(orig.GetCell(c).GetPointId(j)), orig.GetPoint(orig.GetCell(c).GetPointId((j+1)%3)))
+        for c in range(orig.GetNumberOfCells()) for j in range(3) )
+
+    amp = rel*edge
+
+    while True:
+        pd = vtkPolyData()
+        pd.DeepCopy(orig)
+
+        pts = pd.GetPoints()
+
+        for i in range(pts.GetNumberOfPoints()):
+            x, y, z = pts.GetPoint(i)
+            pts.SetPoint(i, x+rng.gauss(0, amp), y+rng.gauss(0, amp), z+rng.gauss(0, amp))
+
+        if not folded(pd):
+            return pd
+
+        amp /= 2
+
+def fuzz_case_noisy(seed):
+    from vtkmodules.vtkFiltersModeling import vtkLinearSubdivisionFilter
+
+    rng = random.Random(seed)
+
+    def prim():
+        kind = rng.choice(['sphere', 'box'])
+
+        if kind == 'sphere':
+            return kind, sphere(rng.uniform(.3, .8), res=rng.randint(12, 40))
+
+        x, y, z = [ rng.uniform(.4, 1.4) for _ in range(3) ]
+
+        tri = vtkTriangleFilter()
+        tri.SetInputData(get_pd(box(-x/2, x/2, -y/2, y/2, -z/2, z/2)))
+
+        sub = vtkLinearSubdivisionFilter()
+        sub.SetInputConnection(tri.GetOutputPort())
+        sub.SetNumberOfSubdivisions(rng.randint(1, 3))
+        sub.Update()
+
+        return kind, sub.GetOutput()
+
+    kindA, a = prim()
+    kindB, b = prim()
+
+    rel = 10**rng.uniform(-3, -1)
+
+    m, pose = random_pose(rng)
+
+    return noisy(a, rng, rel), get_pd(transformed(noisy(b, rng, rel), m)), f'{kindA} {kindB} rel={rel:.2g} pose={pose}'
+
+def test_overlap_near_vertex():
+    # ein schnittpunkt liegt nahe einer ecke auf zwei kanten verschiedener polygone, ein weiterer punkt liegt noch näher
+    # an der ecke (aus test_fuzz_noisy[127])
+
+    pdA, pdB, desc = fuzz_case_noisy(127)
+
+    check_fuzz(pdA, pdB, desc, 127)
+
+# bekannte grenzen des toleranzbasierten ansatzes: schnittpunkte liegen um die toleranz von einer ecke und voneinander
+# entfernt, das einrasten fällt in den angrenzenden polygonen unterschiedlich aus (vgl. test_near_coplanar_band)
+NOISY_LIMITS = {
+    22: 'contact points at the tolerance distance from a vertex and from each other'
+}
+
+@pytest.mark.parametrize('seed', [ pytest.param(seed, marks=pytest.mark.xfail(strict=True, reason=NOISY_LIMITS[seed])) if seed in NOISY_LIMITS else seed
+    for seed in range(FUZZ_OFFSET, FUZZ_OFFSET+FUZZ_CASES) ])
+def test_fuzz_noisy(seed):
+    pdA, pdB, desc = fuzz_case_noisy(seed)
+
+    bf, errors = run_boolean(pdA, pdB, OPER_UNION)
+
+    if any('There is no contact.' in e for e in errors):
+        if not proper_overlap(pdA, pdB):
+            pytest.skip(f'no contact: {desc}')
+
+    check_fuzz(pdA, pdB, desc, seed)

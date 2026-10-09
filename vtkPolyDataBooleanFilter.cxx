@@ -2142,24 +2142,31 @@ void vtkPolyDataBooleanFilter::ResolveOverlaps (vtkPolyData *pd, PolyStripsType 
                 }
 #endif
 
-                assert(_edgeA.back().get().ind == itr3->first);
-                assert(_edgeB.front().get().ind == itr3->first);
+                // der punkt liegt nahe der gemeinsamen ecke edgeA[1], weitere punkte können aber noch näher an ihr liegen,
+                // benötigt werden seine nachbarn auf der von der ecke abgewandten seite
 
-                _edgeA.pop_back();
-                _edgeB.pop_front();
+                auto Find = [&itr3](const std::deque<std::reference_wrapper<const StripPt>> &edge) {
+                    return std::find_if(edge.begin(), edge.end(), [&itr3](const StripPt &sp) { return sp.ind == itr3->first; });
+                };
+
+                auto _itrA = Find(_edgeA);
+                auto _itrB = Find(_edgeB);
+
+                assert(_itrA != _edgeA.end());
+                assert(_itrB != _edgeB.end());
 
                 double pA[3], pB[3];
 
-                if (_edgeA.empty()) {
+                if (_itrA == _edgeA.begin()) {
                     pd->GetPoint(edgeA[0], pA);
                 } else {
-                    std::copy_n(_edgeA.back().get().pt, 3, pA);
+                    std::copy_n(std::prev(_itrA)->get().pt, 3, pA);
                 }
 
-                if (_edgeB.empty()) {
+                if (std::next(_itrB) == _edgeB.end()) {
                     pd->GetPoint(edgeB[1], pB);
                 } else {
-                    std::copy_n(_edgeB.front().get().pt, 3, pB);
+                    std::copy_n(std::next(_itrB)->get().pt, 3, pB);
                 }
 
                 Point3d a {pA[0], pA[1], pA[2]};
