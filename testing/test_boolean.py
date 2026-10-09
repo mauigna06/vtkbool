@@ -967,6 +967,16 @@ def test_branched_same_edge(s):
 
     check_all_modes(scaled(a, s), scaled(b, s))
 
+@pytest.mark.parametrize('s', [1, .3])
+def test_touching_reflex_edge(s):
+    # die nach innen gewölbte kante des sterns liegt in der seite des quaders, ohne deren rand zu erreichen; die linie
+    # entlang der kante ist keine schnittlinie (aus test_fuzz_grid[1649])
+
+    a = scaled(extrude_polygon(star(5, .875, .4375), .375), 1, (0, 0, -.125))
+    b = scaled(transformed(box(-.75, .75, -.1875, .1875, -.6875, .6875), rotation_matrix(180, (0, 1, 0))), 1, (-.25, -.25, .25))
+
+    check_all_modes(scaled(a, s), scaled(b, s))
+
 def check_embedding(bf, tol):
     # jede schnittlinie muss in beiden ergebnissen eine kante der polygone auf beiden seiten sein
     # (im gegensatz zu check_result auch für polygone, die durch eingebettete löcher punkte mehrfach enthalten)

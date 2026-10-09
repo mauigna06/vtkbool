@@ -215,6 +215,10 @@ vtkSmartPointer<vtkPolyData> Contact::GetLines (vtkPolyData *pdA, vtkLinearTrans
     GetCellBounds(newPdA, boundsA);
     GetCellBounds(newPdB, boundsB);
 
+    // die art der verknüpfungen hängt von Editable ab
+    newPdA->DeleteLinks(); newPdA->BuildLinks();
+    newPdB->DeleteLinks(); newPdB->BuildLinks();
+
     treeA->IntersectWithOBBTree(treeB, matrix, InterNodes, this);
 
     IntersectReplacements();
@@ -354,6 +358,82 @@ void Contact::GetCellBounds (vtkPolyData *pd, std::vector<std::array<double, 6>>
     for (vtkIdType i = 0; i < numCells; i++) {
         pd->GetCellBounds(i, bounds[i].data());
     }
+}
+
+bool Contact::TouchesOnly (vtkPolyData *pd, vtkIdType cellId, const Poly &poly, const double *n, double d) {
+    // liegt das polygon auf einer seite der ebene und berührt sie nur mit einer kante, und liegt auch das benachbarte polygon
+    // an dieser kante auf dieser seite, wird die ebene nur berührt und nicht geschnitten
+    //
+    // ist die kante zudem nach innen gewölbt, liegt die andere fläche auf beiden seiten der linie im inneren und die linie
+    // verbindet zwei punkte im inneren der übrigen schnittlinien (wird nicht unterstützt); an nach außen gewölbten kanten
+    // bleibt die linie erhalten
+
+    const double tol = 1e-5;
+
+    auto Side = [&](const double *pt) {
+        double dist = pt[0]*n[0]+pt[1]*n[1]+pt[2]*n[2]-d;
+        return dist > tol ? 1 : (dist < -tol ? -1 : 0);
+    };
+
+    int side = 0;
+
+    IdsType on;
+
+    double pt[3];
+
+    for (auto &p : poly) {
+        pt[0] = p.x; pt[1] = p.y; pt[2] = p.z;
+
+        int s = Side(pt);
+
+        if (s == 0) {
+            on.push_back(p.id);
+        } else if (side == 0) {
+            side = s;
+        } else if (s != side) {
+            return false;
+        }
+    }
+
+    if (side == 0 || on.size() != 2) {
+        return false;
+    }
+
+    auto neigs = vtkSmartPointer<vtkIdList>::New();
+    pd->GetCellEdgeNeighbors(cellId, on[0], on[1], neigs);
+
+    if (neigs->GetNumberOfIds() != 1) {
+        return false;
+    }
+
+    double nP[3];
+    ComputeNormal(poly, nP);
+
+    const Point3d &p0 = poly.front();
+
+    vtkIdType num;
+    const vtkIdType *pts;
+
+    pd->GetCellPoints(neigs->GetId(0), num, pts);
+
+    for (vtkIdType i = 0; i < num; i++) {
+        if (pts[i] == on[0] || pts[i] == on[1]) {
+            continue;
+        }
+
+        pd->GetPoint(pts[i], pt);
+
+        if (Side(pt) != side) {
+            return false;
+        }
+
+        // nach innen gewölbt, wenn der nachbar vor der ebene des polygons liegt
+        if ((pt[0]-p0.x)*nP[0]+(pt[1]-p0.y)*nP[1]+(pt[2]-p0.z)*nP[2] < tol) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void Contact::GetNonManifoldEdges (vtkPolyData *pd, NonManifoldEdgesType &edges) {
@@ -781,6 +861,12 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
         return;
     }
 
+    // berührt eine oberfläche die andere nur entlang einer nach innen gewölbten kante, ist das keine schnittlinie
+    // (die ersetzungen aus IntersectReplacements haben keine verknüpfungen)
+
+    bool touchA = idA < static_cast<vtkIdType>(boundsA.size()) && TouchesOnly(newPdA, idA, polyA, nB, dB);
+    bool touchB = idB < static_cast<vtkIdType>(boundsB.size()) && TouchesOnly(newPdB, idB, polyB, nA, dA);
+
     vtkMath::Cross(nA, nB, r);
     vtkMath::Normalize(r);
 
@@ -880,7 +966,7 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
     }
 
     if ((intersPtsA.size() & 1) == 0 && (intersPtsB.size() & 1) == 0) {
-        AddContactLines(intersPtsA, intersPtsB, idA, idB);
+        AddContactLines(intersPtsA, intersPtsB, idA, idB, touchA, touchB);
     }
 
 }
@@ -981,7 +1067,7 @@ void Contact::OverlapLines (OverlapsType &overlaps, InterPtsType &intersA, Inter
 
 }
 
-void Contact::AddContactLines (InterPtsType &intersA, InterPtsType &intersB, vtkIdType idA, vtkIdType idB) {
+void Contact::AddContactLines (InterPtsType &intersA, InterPtsType &intersB, vtkIdType idA, vtkIdType idB, bool touchA, bool touchB) {
 
     if (intersA.size() == 0 || intersB.size() == 0) {
         return;
@@ -995,6 +1081,12 @@ void Contact::AddContactLines (InterPtsType &intersA, InterPtsType &intersB, vtk
     for (itr = overlaps.begin(); itr != overlaps.end(); ++itr) {
         auto &f = std::get<0>(*itr);
         auto &s = std::get<1>(*itr);
+
+        // die linie liegt auf der kante, mit der das polygon die andere fläche nur berührt, und erreicht deren rand nicht
+
+        if ((touchA && f.src == Src::A && s.src == Src::A) || (touchB && f.src == Src::B && s.src == Src::B)) {
+            continue;
+        }
 
         if ((f.src == Src::A && edgesA.count(f.edge) == 1) || (s.src == Src::A && edgesA.count(s.edge) == 1)) {
             touchesEdgesA = true;

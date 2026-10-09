@@ -133,6 +133,8 @@ public:
 
     static void GetCellBounds (vtkPolyData *pd, std::vector<std::array<double, 6>> &bounds);
 
+    static bool TouchesOnly (vtkPolyData *pd, vtkIdType cellId, const Poly &poly, const double *n, double d);
+
     vtkSmartPointer<vtkPolyData> GetLines (vtkPolyData *pdA = nullptr, vtkLinearTransform *transA = nullptr, vtkPolyData *pdB = nullptr, vtkLinearTransform *transB = nullptr);
 
     void GetNonManifoldEdges (vtkPolyData *pd, NonManifoldEdgesType &edges);
@@ -149,7 +151,7 @@ public:
 
     void OverlapLines (OverlapsType &overlaps, InterPtsType &intersA, InterPtsType &intersB);
 
-    void AddContactLines (InterPtsType &intersA, InterPtsType &intersB, vtkIdType idA, vtkIdType idB);
+    void AddContactLines (InterPtsType &intersA, InterPtsType &intersB, vtkIdType idA, vtkIdType idB, bool touchA, bool touchB);
 
     static int InterNodes (vtkOBBNode *nodeA, vtkOBBNode *nodeB, vtkMatrix4x4 *vtkNotUsed(matrix), void *ptr);
 
