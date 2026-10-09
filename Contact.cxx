@@ -819,10 +819,14 @@ void Contact::InterPolys (vtkIdType idA, vtkIdType idB) {
     }
 #endif
 
-    // parallele ebenen (auch entgegengesetzt orientierte) haben keine schnittlinie, liegen sie aufeinander,
-    // ergibt sich die berührung aus den angrenzenden polygonen
+    // parallele ebenen haben keine schnittlinie, liegen sie aufeinander, ergibt sich die berührung aus den angrenzenden
+    // polygonen; bei entgegengesetzter orientierung erst dann, wenn die richtung der schnittlinie nur noch aus
+    // rundungsfehlern besteht
 
-    if (std::abs(vtkMath::Dot(nA, nB)) > .9999999999) {
+    double c[3];
+    vtkMath::Cross(nA, nB, c);
+
+    if (vtkMath::Dot(nA, nB) > .9999999999 || vtkMath::Norm(c) < 1e-12) {
         return;
     }
 
