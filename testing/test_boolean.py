@@ -194,12 +194,24 @@ def volume(src):
     assert not bad, 'input is not closed'
     return vol
 
-def check_solid(bf, errors, expected=None, scale=1., rel_tol=1e-6):
+def surface_area(pd):
+    from vtkmodules.vtkFiltersCore import vtkMassProperties
+
+    tri = vtkTriangleFilter()
+    tri.SetInputData(pd)
+
+    mp = vtkMassProperties()
+    mp.SetInputConnection(tri.GetOutputPort())
+    mp.Update()
+
+    return mp.GetSurfaceArea()
+
+def check_solid(bf, errors, expected=None, vol_tol=1e-6):
     assert not errors, errors
 
     pd = bf.GetOutput(0)
 
-    if expected is None or abs(expected) < rel_tol*scale:
+    if expected is None or abs(expected) < vol_tol:
         # leeres ergebnis ist erlaubt, die volumen-identitäten fangen falsche leere ergebnisse ab
         if pd.GetNumberOfCells() == 0:
             return 0
@@ -212,10 +224,10 @@ def check_solid(bf, errors, expected=None, scale=1., rel_tol=1e-6):
     vol, bad = surface_props(pd)
 
     assert not bad, f'{len(bad)} defective edges, e.g. {bad[:5]}'
-    assert vol > -rel_tol*scale, f'negative volume {vol}'
+    assert vol > -vol_tol, f'negative volume {vol}'
 
     if expected is not None:
-        assert vol == pytest.approx(expected, rel=0, abs=rel_tol*scale)
+        assert vol == pytest.approx(expected, rel=0, abs=vol_tol)
 
     return vol
 
@@ -227,13 +239,15 @@ def check_all_modes(srcA, srcB, expected=None, rel_tol=1e-6, d=None, none=True, 
     """
 
     if matrices is None:
-        volA = volume(srcA)
-        volB = volume(srcB)
+        pdA, pdB = get_pd(srcA), get_pd(srcB)
     else:
-        volA = volume(transformed(srcA, matrices[0]))
-        volB = volume(transformed(srcB, matrices[1]))
+        pdA, pdB = get_pd(transformed(srcA, matrices[0])), get_pd(transformed(srcB, matrices[1]))
 
-    scale = max(abs(volA), abs(volB))
+    volA = volume(pdA)
+    volB = volume(pdB)
+
+    # der filter darf punkte innerhalb seiner toleranz verschieben, das volumen ändert sich dann um bis zu fläche*toleranz
+    vol_tol = max(rel_tol*max(abs(volA), abs(volB)), .01*internal_tol(pdA, pdB)*(surface_area(pdA)+surface_area(pdB)))
 
     vols = {}
 
@@ -248,15 +262,13 @@ def check_all_modes(srcA, srcB, expected=None, rel_tol=1e-6, d=None, none=True, 
         exp = None if expected is None else expected.get(name)
 
         try:
-            vols[name] = check_solid(bf, errors, exp, scale, rel_tol)
+            vols[name] = check_solid(bf, errors, exp, vol_tol)
         except AssertionError as e:
             raise AssertionError(f'{name}: {e}') from e
 
-    tol = rel_tol*scale
-
-    assert vols['union']+vols['intersection'] == pytest.approx(volA+volB, rel=0, abs=tol)
-    assert vols['difference']+vols['intersection'] == pytest.approx(volA, rel=0, abs=tol)
-    assert vols['difference2']+vols['intersection'] == pytest.approx(volB, rel=0, abs=tol)
+    assert vols['union']+vols['intersection'] == pytest.approx(volA+volB, rel=0, abs=vol_tol)
+    assert vols['difference']+vols['intersection'] == pytest.approx(volA, rel=0, abs=vol_tol)
+    assert vols['difference2']+vols['intersection'] == pytest.approx(volB, rel=0, abs=vol_tol)
 
     if none:
         bf, errors = run_boolean(srcA, srcB, OPER_NONE, matrices)
