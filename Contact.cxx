@@ -536,6 +536,8 @@ void Contact::InterEdgeLine (InterPtsType &interPts, const Point3d &pA, const Po
             End end = dA < 1e-12 ? End::A : (dB < 1e-12 ? End::B : End::None);
 
             interPts.emplace_back(x, 0, 0, x, pA.id, pB.id, end, src, PointSrc::Calculated);
+            interPts.back().extrapolated = std::abs(pA.y) > 1e-12 && std::abs(pB.y) > 1e-12 &&
+                std::signbit(pA.y) == std::signbit(pB.y);
         }
     }
 
@@ -561,6 +563,34 @@ bool Contact::InterPolyLine (InterPtsType &interPts, const Base2 &base, const Po
         }
 
         InterEdgeLine(interPts, *itrA, *itrB, src); // schnitt mit x-achse
+    }
+
+    for (auto &p : interPts) {
+        if (p.pointSrc != PointSrc::Calculated || p.extrapolated || p.end == End::None) {
+            continue;
+        }
+
+        auto vertex = std::find_if(poly.begin(), poly.end(), [&p](const Point3d &q) {
+            return q.id == p.GetEnd();
+        });
+        const auto &prev = vertex == poly.begin() ? poly.back() : *std::prev(vertex);
+        const auto &next = vertex == poly.end()-1 ? poly.front() : *std::next(vertex);
+
+        if (std::abs(vertex->y) > 1e-12 && std::abs(prev.y) > 1e-12 &&
+            std::abs(next.y) > 1e-12 && std::signbit(prev.y) == std::signbit(next.y) &&
+            std::signbit(vertex->y) != std::signbit(prev.y)) {
+            p.end = End::None;
+        }
+    }
+
+    // A genuine corner clip already has two finite-edge crossings. An
+    // extrapolated crossing would turn it into an odd, discarded contact.
+    if (std::count_if(interPts.begin(), interPts.end(), [](const InterPt &p) {
+            return p.pointSrc == PointSrc::Calculated && !p.extrapolated && p.end == End::None;
+        }) >= 2) {
+        interPts.erase(std::remove_if(interPts.begin(), interPts.end(), [](const InterPt &p) {
+            return p.extrapolated;
+        }), interPts.end());
     }
 
     for (auto& p : interPts) {

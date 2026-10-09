@@ -58,6 +58,7 @@ public:
     vtkIdType srcA, srcB;
 
     PointSrc pointSrc;
+    bool extrapolated {false};
 
     friend std::ostream& operator<< (std::ostream &out, const InterPt &s) {
         out << "pt [" << s.pt[0] << ", " << s.pt[1] << ", " << s.pt[2] << "]"

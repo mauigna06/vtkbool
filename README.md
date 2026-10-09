@@ -50,6 +50,14 @@ The usage of the library is very simple. Look at the example in the section belo
 
 The alternative is the more generic `SetOperMode`. The method must be called with the number of the desired operation, an integer between 0 and 4, with the same meaning as mentioned before. The default is Union.
 
+`SetMatrix(port, matrix)` applies a transform to input port 0 or 1 before
+normalization and cleaning. Scaling and translation therefore use the same
+relative geometric tolerances as explicitly transformed input meshes.
+Reflections preserve the input's surface orientation by reversing cell winding.
+Replacing a matrix, modifying it in place, or removing it with
+`SetMatrix(port, nullptr)` (`None` in Python) invalidates the cached geometry.
+Changing only the operation mode reuses the cached cuts.
+
 ### C++ Example
 
 Create a directory somewhere in your file system, download vtkbool and unpack it into that.
@@ -264,6 +272,35 @@ from vtkbool.vtkbool import vtkPolyDataBooleanFilter
 - *Boolean operation failed.*
 
   A boolean operation can fail at the end, if some of the intersection lines are not part of the result.
+
+## Testing
+
+The Python tests check all four boolean modes for closed, consistently oriented
+surfaces, analytic box volumes, volume conservation, and contact-line embedding.
+They include matrix removal/replacement, extreme scales and translations,
+reflections, short contact edges, and multi-polygon vertex fans.
+
+Run them with the built Python wrapper and VTK modules on `PYTHONPATH`:
+
+```sh
+cd testing
+python -B -m pytest -o cache_dir=/tmp/vtkbool-pytest-cache --basetemp=/tmp/vtkbool-test-output
+```
+
+`VTKBOOL_FUZZ_CASES` (default 50) and `VTKBOOL_FUZZ_OFFSET` (default 0) select
+reproducible primitive, coplanar-grid, and irregular-mesh stress cases:
+
+```sh
+VTKBOOL_FUZZ_OFFSET=1350 VTKBOOL_FUZZ_CASES=1000 python -B -m pytest test_boolean.py -k test_fuzz \
+  -o cache_dir=/tmp/vtkbool-fuzz-cache --basetemp=/tmp/vtkbool-fuzz-output
+ctest --test-dir /path/to/build -R '^(test_contact|test_congruence|test_merger)$' --output-on-failure
+```
+
+Expected failures remain for unsupported self-intersections/non-manifold
+contacts and for simultaneous offsets in several directions near the capture
+tolerance (`test_near_coplanar_band`). Use `--runxfail` to reproduce them as
+ordinary failures; a passing stress campaign does not prove failure-free
+behavior for arbitrary meshes.
 
 ## Copyright
 

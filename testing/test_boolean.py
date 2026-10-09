@@ -1339,23 +1339,19 @@ def test_no_silent_failure():
         if not errors:
             check_solid(bf, errors)
 
-@pytest.mark.xfail(strict=True, reason='known failures with irregular meshes, see the comments')
-@pytest.mark.parametrize('seed', [
-    1019, # die schnittlinien trennen die kugel nahe einer ecke nicht, der filter meldet "Boolean operation failed"
-    1212 # ein stück der schnittlinie fehlt ("At least one line-end has only one neighbor", auch vor allen änderungen)
-])
-def test_noisy_known_failures(seed):
-    pdA, pdB, desc = fuzz_case_noisy(seed)
-    check_fuzz(pdA, pdB, desc, seed)
+def test_near_vertex_polygon_fan():
+    pdA, pdB, desc = fuzz_case_noisy(1019)
+    check_fuzz(pdA, pdB, desc, 1019)
 
-# bekannte grenzen des toleranzbasierten ansatzes: schnittpunkte liegen um die toleranz von einer ecke und voneinander
-# entfernt, das einrasten fällt in den angrenzenden polygonen unterschiedlich aus (vgl. test_near_coplanar_band)
-NOISY_LIMITS = {
-    22: 'contact points at the tolerance distance from a vertex and from each other'
-}
+def test_near_vertex_extrapolated_intersection():
+    pdA, pdB, desc = fuzz_case_noisy(1212)
+    check_fuzz(pdA, pdB, desc, 1212)
 
-@pytest.mark.parametrize('seed', [ pytest.param(seed, marks=pytest.mark.xfail(strict=True, reason=NOISY_LIMITS[seed])) if seed in NOISY_LIMITS else seed
-    for seed in range(FUZZ_OFFSET, FUZZ_OFFSET+FUZZ_CASES) ])
+def test_short_edges_near_capture_tolerance():
+    pdA, pdB, desc = fuzz_case_noisy(22)
+    check_fuzz(pdA, pdB, desc, 22)
+
+@pytest.mark.parametrize('seed', range(FUZZ_OFFSET, FUZZ_OFFSET+FUZZ_CASES))
 def test_fuzz_noisy(seed):
     pdA, pdB, desc = fuzz_case_noisy(seed)
 

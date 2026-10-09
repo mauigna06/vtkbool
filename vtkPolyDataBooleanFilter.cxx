@@ -50,6 +50,7 @@ limitations under the License.
 #include <vtkCellIterator.h>
 #include <vtkTransformPolyDataFilter.h>
 #include <vtkTransform.h>
+#include <vtkReverseSense.h>
 
 #include "vtkPolyDataBooleanFilter.h"
 
@@ -91,6 +92,7 @@ vtkPolyDataBooleanFilter::vtkPolyDataBooleanFilter () {
 
     timeMatrixA = 0;
     timeMatrixB = 0;
+    matricesChanged = true;
 
     normScale = 1;
     std::fill_n(normCenter, 3, 0);
@@ -140,69 +142,68 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
         vtkMTimeType timeA = pdA->GetMTime();
         vtkMTimeType timeB = pdB->GetMTime();
 
-        if (timeA > timePdA || timeB > timePdB || (matrices[0] != nullptr && matrices[0]->GetMTime() > timeMatrixA) || (matrices[1] != nullptr && matrices[1]->GetMTime() > timeMatrixB)) {
+        if (matricesChanged || timeA > timePdA || timeB > timePdB || (matrices[0] != nullptr && matrices[0]->GetMTime() > timeMatrixA) || (matrices[1] != nullptr && matrices[1]->GetMTime() > timeMatrixB)) {
 
-            if (contact == nullptr || timeA > timePdA || timeB > timePdB) {
-                // CellData sichern
+            // CellData sichern
 
-                cellDataA->DeepCopy(pdA->GetCellData());
-                cellDataB->DeepCopy(pdB->GetCellData());
+            cellDataA->DeepCopy(pdA->GetCellData());
+            cellDataB->DeepCopy(pdB->GetCellData());
 
-                ComputeNormalization(pdA, pdB);
+            vtkSmartPointer<vtkPolyData> inputs[] = {pdA, pdB};
 
-                cleanA = Clean(Normalize(pdA));
-                cleanB = Clean(Normalize(pdB));
+            for (int i = 0; i < 2; i++) {
+                if (transforms[i] != nullptr) {
+                    auto tf = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
+                    tf->SetInputData(inputs[i]);
+                    tf->SetTransform(transforms[i]);
+                    tf->SetOutputPointsPrecision(vtkAlgorithm::DOUBLE_PRECISION);
+                    tf->Update();
+                    inputs[i] = tf->GetOutput();
+
+                    if (transforms[i]->GetMatrix()->Determinant() < 0) {
+                        auto reverse = vtkSmartPointer<vtkReverseSense>::New();
+                        reverse->SetInputData(inputs[i]);
+                        reverse->ReverseCellsOn();
+                        reverse->ReverseNormalsOff();
+                        reverse->Update();
+                        inputs[i] = reverse->GetOutput();
+                    }
+                }
+            }
+
+            // Cleaning and contact tolerances must apply to the transformed geometry.
+            ComputeNormalization(inputs[0], inputs[1]);
+
+            cleanA = Clean(Normalize(inputs[0]));
+            cleanB = Clean(Normalize(inputs[1]));
 
 #ifdef DEBUG
-                WriteVTK("modPdA.vtk", cleanA);
-                WriteVTK("modPdB.vtk", cleanB);
+            WriteVTK("modPdA.vtk", cleanA);
+            WriteVTK("modPdB.vtk", cleanB);
 #endif
 
-                try {
-                    PreventEqualCaptPoints(cleanA, cleanB).Run();
-                } catch (const std::runtime_error &e) {
-                    vtkErrorMacro("Cannot prevent equal capture points.");
-                    return 1;
-                }
-
-                contact = std::make_shared<Contact>(cleanA, cleanB);
+            try {
+                PreventEqualCaptPoints(cleanA, cleanB).Run();
+            } catch (const std::runtime_error &e) {
+                vtkErrorMacro("Cannot prevent equal capture points.");
+                return 1;
             }
+
+            contact = std::make_shared<Contact>(cleanA, cleanB);
 
             start = clock::now();
 
             modPdA = vtkSmartPointer<vtkPolyData>::New();
             modPdB = vtkSmartPointer<vtkPolyData>::New();
 
-            auto transA = GetNormalizedTransform(0);
-            auto transB = GetNormalizedTransform(1);
-
-            if (transA != nullptr) {
-                auto tfA = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-                tfA->SetInputData(cleanA);
-                tfA->SetTransform(transA);
-                tfA->Update();
-
-                modPdA->DeepCopy(tfA->GetOutput());
-            } else {
-                modPdA->DeepCopy(cleanA);
-            }
-
-            if (transB != nullptr) {
-                auto tfB = vtkSmartPointer<vtkTransformPolyDataFilter>::New();
-                tfB->SetInputData(cleanB);
-                tfB->SetTransform(transB);
-                tfB->Update();
-
-                modPdB->DeepCopy(tfB->GetOutput());
-            } else {
-                modPdB->DeepCopy(cleanB);
-            }
+            modPdA->DeepCopy(cleanA);
+            modPdB->DeepCopy(cleanB);
 
             modPdA->EditableOn();
             modPdB->EditableOn();
 
             try {
-                contLines = contact->GetLines(modPdA, transA, modPdB, transB);
+                contLines = contact->GetLines(modPdA, nullptr, modPdB, nullptr);
             } catch (const std::runtime_error &e) {
                 std::stringstream ss;
                 ss << std::quoted(e.what());
@@ -393,6 +394,8 @@ int vtkPolyDataBooleanFilter::RequestData(vtkInformation *request, vtkInformatio
             if (matrices[1] != nullptr) {
                 timeMatrixB = matrices[1]->GetMTime();
             }
+
+            matricesChanged = false;
 
         }
 
@@ -1145,17 +1148,7 @@ void CleanPoly (vtkPolyData *pd, IdsType &poly) {
     IdsType newPoly;
     newPoly.reserve(poly.size());
 
-    double pt[3];
-
-    std::map<vtkIdType, Point3d> _pts;
-
-    for (vtkIdType id : poly) {
-        pd->GetPoint(id, pt);
-
-        _pts.emplace(std::piecewise_construct,
-            std::forward_as_tuple(id),
-            std::forward_as_tuple(pt[0], pt[1], pt[2]));
-    }
+    double a[3], b[3];
 
     IdsType::const_iterator itrA, itrB;
 
@@ -1165,10 +1158,12 @@ void CleanPoly (vtkPolyData *pd, IdsType &poly) {
             itrB = poly.begin();
         }
 
-        auto _a = _pts.find(*itrA);
-        auto _b = _pts.find(*itrB);
+        pd->GetPoint(*itrA, a);
+        pd->GetPoint(*itrB, b);
 
-        if (_a->second == _b->second) {} else {
+        // Only remove coincident vertices. Quantized equality can delete a
+        // short edge that is still present in the neighboring polygon.
+        if (vtkMath::Distance2BetweenPoints(a, b) > 1e-20) {
             newPoly.push_back(*itrA);
         }
     }
@@ -2176,38 +2171,48 @@ void vtkPolyDataBooleanFilter::ResolveOverlaps (vtkPolyData *pd, PolyStripsType 
                     cell = vtkSmartPointer<vtkIdList>::New();
 
                 pd->GetPointCells(edgeA[1], cells);
-                vtkIdType i, j, numCells = cells->GetNumberOfIds();
+                vtkIdType i, numCells = cells->GetNumberOfIds();
 
                 double pt[3];
 
-                vtkIdType id;
+                std::map<Point3d, std::pair<vtkIdType, vtkIdType>> fan;
 
                 for (i = 0; i < numCells; i++) {
                     pd->GetCellPoints(cells->GetId(i), cell);
-                    Poly poly;
-                    for (j = 0; j < cell->GetNumberOfIds(); j++) {
-                        pd->GetPoint(cell->GetId(j), pt);
-                        poly.emplace_back(pt[0], pt[1], pt[2]);
+                    vtkIdType j = cell->IsId(edgeA[1]);
+                    if (j == NOTSET) {
+                        continue;
                     }
-                    if (std::find(poly.begin(), poly.end(), a) != poly.end()
-                        && std::find(poly.begin(), poly.end(), b) != poly.end()) {
 
-                        contLines->GetPoint(itr3->first, pt);
+                    vtkIdType num = cell->GetNumberOfIds();
+                    vtkIdType prev = cell->GetId(j == 0 ? num-1 : j-1);
+                    vtkIdType next = cell->GetId(j+1 == num ? 0 : j+1);
+                    pd->GetPoint(next, pt);
+                    fan.emplace(Point3d(pt[0], pt[1], pt[2]), std::make_pair(cells->GetId(i), prev));
+                }
 
-                        id = pd->GetPoints()->InsertNextPoint(pt);
+                // The wedge between the captured edges can span several
+                // polygons around the vertex, not just a single polygon.
+                auto step = fan.find(a);
+                std::set<vtkIdType> wedge;
+                bool complete = false;
 
-#ifdef DEBUG
-                        std::cout << cells->GetId(i)
-                            << ": " << edgeA[1] << " -> " << id
-                            << std::endl;
-#endif
-
-                        pd->ReplaceCellPoint(cells->GetId(i), edgeA[1], id);
-
+                while (step != fan.end() && wedge.emplace(step->second.first).second) {
+                    pd->GetPoint(step->second.second, pt);
+                    Point3d next {pt[0], pt[1], pt[2]};
+                    if (next == b) {
+                        complete = true;
                         break;
-
                     }
+                    step = fan.find(next);
+                }
 
+                if (complete) {
+                    contLines->GetPoint(itr3->first, pt);
+                    vtkIdType id = pd->GetPoints()->InsertNextPoint(pt);
+                    for (vtkIdType cellId : wedge) {
+                        pd->ReplaceCellPoint(cellId, edgeA[1], id);
+                    }
                 }
 
             }
@@ -3305,24 +3310,6 @@ void vtkPolyDataBooleanFilter::Denormalize (vtkPolyData *pd) const {
     pd->SetPoints(newPts);
 }
 
-vtkSmartPointer<vtkLinearTransform> vtkPolyDataBooleanFilter::GetNormalizedTransform (int i) const {
-    if (transforms[i] == nullptr) {
-        return nullptr;
-    }
-
-    // die matrix wirkt auf die originalen koordinaten
-
-    auto transform = vtkSmartPointer<vtkTransform>::New();
-    transform->PostMultiply();
-    transform->Scale(1/normScale, 1/normScale, 1/normScale);
-    transform->Translate(normCenter);
-    transform->Concatenate(transforms[i]->GetMatrix());
-    transform->Translate(-normCenter[0], -normCenter[1], -normCenter[2]);
-    transform->Scale(normScale, normScale, normScale);
-
-    return transform;
-}
-
 void vtkPolyDataBooleanFilter::SetMatrix (int i, vtkMatrix4x4 *matrix) {
     if (i != 0 && i != 1) {
         return;
@@ -3356,6 +3343,7 @@ void vtkPolyDataBooleanFilter::SetMatrix (int i, vtkMatrix4x4 *matrix) {
         transforms[i] = transform;
     }
 
+    matricesChanged = true;
     Modified();
 }
 

@@ -119,8 +119,11 @@ else()
             add_executable(test_congruence testing/test_congruence.cxx)
             target_link_libraries(test_congruence PRIVATE vtkbool ${VTK_LIBRARIES})
 
+            add_executable(test_contact testing/test_contact.cxx)
+            target_link_libraries(test_contact PRIVATE vtkbool ${VTK_LIBRARIES})
+
             vtk_module_autoinit(
-                TARGETS test_merger test_congruence
+                TARGETS test_merger test_congruence test_contact
                 MODULES ${VTK_LIBRARIES}
             )
 
@@ -131,6 +134,8 @@ else()
             add_test(NAME "test_congruence"
                 COMMAND test_congruence
                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/testing)
+
+            add_test(NAME "test_contact" COMMAND test_contact)
 
             add_test(NAME "generate_frieze"
                 COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/generate_frieze.py

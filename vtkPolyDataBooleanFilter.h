@@ -210,9 +210,9 @@ class VTK_EXPORT vtkPolyDataBooleanFilter : public vtkPolyDataAlgorithm {
     void ComputeNormalization (vtkPolyData *pdA, vtkPolyData *pdB);
     vtkSmartPointer<vtkPolyData> Normalize (vtkPolyData *pd) const;
     void Denormalize (vtkPolyData *pd) const;
-    vtkSmartPointer<vtkLinearTransform> GetNormalizedTransform (int i) const;
 
     vtkMTimeType timeMatrixA, timeMatrixB;
+    bool matricesChanged;
 
 public:
     vtkTypeMacro(vtkPolyDataBooleanFilter, vtkPolyDataAlgorithm);
