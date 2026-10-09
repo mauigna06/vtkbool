@@ -945,6 +945,16 @@ def test_prism_face_touch(s):
 
     assert vols['intersection'] == pytest.approx(0, abs=1e-9)
 
+@pytest.mark.parametrize('s', [1, .3])
+def test_branched_same_edge(s):
+    # die innere ecke des sterns liegt in der seite des quaders, die schnittlinien verzweigen sich dort und alle drei
+    # zweige beginnen auf der gleichen kante des polygons (aus test_fuzz_grid[492])
+
+    a = scaled(extrude_polygon(star(5, .5, .25), .5), 1, (0, 0, -.125))
+    b = scaled(transformed(box(-.75, .75, -.125, .125, -.25, .25), rotation_matrix(30, (0, 1, 0))), 1, (0, -.375, .375))
+
+    check_all_modes(scaled(a, s), scaled(b, s))
+
 def check_embedding(bf, tol):
     # jede schnittlinie muss in beiden ergebnissen eine kante der polygone auf beiden seiten sein
     # (im gegensatz zu check_result auch für polygone, die durch eingebettete löcher punkte mehrfach enthalten)

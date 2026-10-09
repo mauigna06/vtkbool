@@ -1407,9 +1407,11 @@ bool vtkPolyDataBooleanFilter::CutCells (vtkPolyData *pd, PolyStripsType &polySt
                     newPoly.push_back(_itrD->desc[1]);
                 }
 
-                // punkte zw. den enden einfügen
+                // punkte zw. den enden einfügen (beginnen beide strips auf der gleichen kante und liegt der anfang von
+                // stripA hinter dem von stripB, geht es einmal um das polygon herum)
 
-                if (stripA.front().ref != stripB.front().ref) {
+                if (stripA.front().ref != stripB.front().ref
+                    || pts[stripA.front().ind].t > pts[stripB.front().ind].t) {
                     auto posA = std::find(next->begin(), next->end(), stripA.front().ref);
                     auto posB = std::find(next->begin(), next->end(), stripB.front().ref);
 
